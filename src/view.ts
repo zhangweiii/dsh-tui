@@ -2,7 +2,7 @@
 
 import type { AskUserQuestionItem } from '@deepseek-ai/dsh-user-questions/types'
 import {
-  Editor, Markdown, ScrollView, SelectList, Text, truncateToWidth, visibleWidth, VStack,
+  Editor, Markdown, ScrollView, SelectList, stripTerminalSequences, Text, truncateToWidth, visibleWidth, VStack,
   type Component, type Focusable, type SelectItem, type TUI,
 } from '@earendil-works/pi-tui'
 import { contentText, projectionStatus, type TranscriptRow, type TuiViewState } from './model.ts'
@@ -204,6 +204,60 @@ class StateLine implements Component {
   }
 }
 
+const PROMPT_MARKER = `${ansi.cyan(ansi.bold('>'))} `
+const PROMPT_INDENT = ' '.repeat(visibleWidth('> '))
+
+/**
+ * Wraps an Editor with a `> ` prompt marker in the left gutter. Wrapped and
+ * multi-line input lines are indented by the same width so every line aligns
+ * with the first line's text column. The editor keeps its inner padding at
+ * zero; the gutter reserves the columns instead.
+ */
+class PromptEditor implements Component, Focusable {
+  private _focused = false
+  private readonly borderClose: string
+
+  get focused(): boolean { return this._focused }
+  set focused(value: boolean) {
+    this._focused = value
+    this.editor.focused = value
+  }
+
+  constructor(readonly editor: Editor) {
+    // Derive the SGR closing sequence borderColor appends, so borders can be
+    // widened by inserting dashes before it.
+    const probe = editor.borderColor('\u0001')
+    this.borderClose = probe.slice(probe.indexOf('\u0001') + 1)
+  }
+
+  invalidate(): void { this.editor.invalidate() }
+
+  handleInput(data: string): void { this.editor.handleInput(data) }
+
+  render(width: number): string[] {
+    if (width < 6) return this.editor.render(width)
+    const lines = this.editor.render(width - PROMPT_INDENT.length)
+    // Only show `> ` when the editor is scrolled to its very first line.
+    const scrolled = stripTerminalSequences(lines[0] ?? '').includes('↑')
+    let prompted = false
+    return lines.map(line => {
+      if (stripTerminalSequences(line).startsWith('─')) return this.widenBorder(line)
+      if (!prompted && !scrolled) {
+        prompted = true
+        return `${PROMPT_MARKER}${line}`
+      }
+      return `${PROMPT_INDENT}${line}`
+    })
+  }
+
+  /** Extend a border line across the prompt gutter so the box encloses `> `. */
+  private widenBorder(line: string): string {
+    if (this.borderClose === '') return `${line}──`
+    const index = line.lastIndexOf(this.borderClose)
+    return index === -1 ? line : `${line.slice(0, index)}──${line.slice(index)}`
+  }
+}
+
 /** Stable focus target whose visible child changes between editor, picker and requests. */
 class ComposerSlot implements Component, Focusable {
   private children: Component[] = []
@@ -256,13 +310,17 @@ export class TerminalView {
   private readonly activity: StateLine
   private readonly status: StateLine
   private readonly composer = new ComposerSlot()
+  private readonly editorBox: PromptEditor
+  private readonly questionEditorBox: PromptEditor
   private pickerSignature = ''
   private picker: SelectList | undefined
 
   constructor(tui: TUI, state: TuiViewState, private readonly actions: TerminalViewActions) {
     this.state = state
-    this.editor = new Editor(tui, editorTheme, { paddingX: 1, autocompleteMaxVisible: 8 })
-    this.questionEditor = new Editor(tui, editorTheme, { paddingX: 1 })
+    this.editor = new Editor(tui, editorTheme, { paddingX: 0, autocompleteMaxVisible: 8 })
+    this.questionEditor = new Editor(tui, editorTheme, { paddingX: 0 })
+    this.editorBox = new PromptEditor(this.editor)
+    this.questionEditorBox = new PromptEditor(this.questionEditor)
     this.document = new TranscriptDocument(state)
     this.transcript = new ScrollView(this.document, {
       follow: 'end', primary: true, overscroll: 'contain', scrollbar: 'auto', scrollbarStyle: ansi.gray,
@@ -316,9 +374,9 @@ export class TerminalView {
       this.questionEditor.disableSubmit = questionSubmitting
       this.composer.set([
         ...prompt,
-        this.questionEditor,
+        this.questionEditorBox,
         new Text(ansi.dim(`${question?.multiSelect === true ? '多个编号用逗号分隔，或输入自定义回答 · ' : ''}Enter 确认 · Esc 取消请求`), 1, 0),
-      ], this.questionEditor)
+      ], this.questionEditorBox)
       return
     }
     this.editor.disableSubmit = false
@@ -342,9 +400,9 @@ export class TerminalView {
     this.pickerSignature = ''
     this.picker = undefined
     this.composer.set([
-      this.editor,
+      this.editorBox,
       new Text(ansi.dim('Enter 发送 · Tab/↑↓ 补全命令 · Alt+Enter 插话 · Shift+Enter 换行 · Esc 清空/取消 · Ctrl+C 退出'), 1, 0),
-    ], this.editor)
+    ], this.editorBox)
   }
 }
 
