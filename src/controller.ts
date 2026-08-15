@@ -68,12 +68,18 @@ interface TuiPluginInventoryClient {
   }>
 }
 
+/** Host-only job lifecycle access: kill an owned `ctx.jobs` background task. */
+interface JobKillClient {
+  kill(id: string, reason?: string): Promise<{ status: 'requested' | 'already-finished' }>
+}
+
 /** Host-only capabilities whose transports intentionally sit outside IApiClient. */
 export interface TuiHostExtensions {
   feedback?: MessageFeedbackClient
   downloads?: DownloadsApi
   cordis?: TuiCordisClient
   plugins?: TuiPluginInventoryClient
+  jobs?: JobKillClient
 }
 
 type TuiTarget =
@@ -127,6 +133,10 @@ function prettyJson(input: unknown): string[] {
 
 function formatCount(value: number): string {
   return new Intl.NumberFormat('zh-CN').format(value)
+}
+
+function oneLine(value: string): string {
+  return value.replaceAll(/\s*\n\s*/gu, ' ').trim()
 }
 
 function formatBytes(value: number): string {
@@ -811,6 +821,36 @@ export class TuiController {
       sessionId: this.selectedSessionId(), itemId: item.id, action: { kind: 'steer' },
     }))
     this.setNotice(`已将 queue item ${item.id} 插入当前轮次`)
+  }
+
+  private commandJobs(): void {
+    if (this.state.jobs.length === 0) {
+      this.showOverlay('Jobs', ['当前没有后台任务'])
+      return
+    }
+    this.showOverlay('Jobs · 后台任务', this.state.jobs.map(job => `${job.id} · ${job.status} · ${job.kind} · ${oneLine(job.label)}${job.detail === undefined ? '' : `（${oneLine(job.detail)}）`}`))
+  }
+
+  private async commandJobKill(input: string): Promise<void> {
+    const jobClient = this.extensions.jobs
+    if (jobClient === undefined) throw new Error('停止后台任务需要本地 standalone Host；连接 Web Host 时不提供该能力')
+    const confirmation = confirmed(input)
+    if (!confirmation.confirmed) throw new Error('停止后台任务需要追加 --yes')
+    const query = confirmation.rest
+    if (query === '') throw new Error('用法：/job-kill <id-or-prefix> --yes')
+    const matches = this.state.jobs.filter(job => job.id === query || job.id.startsWith(query))
+    if (matches.length === 0) throw new Error(`没有匹配的后台任务：${query}`)
+    const target = matches.length === 1 ? (matches[0] as NonNullable<(typeof matches)[number]>) : matches.find(job => job.id === query)
+    if (target === undefined) throw new Error(`匹配到多个后台任务，请使用完整 id：${matches.map(job => job.id).join('、')}`)
+    let result: { status: 'requested' | 'already-finished' }
+    try {
+      result = await jobClient.kill(target.id, `TUI /job-kill by user`)
+    } catch (error) {
+      throw new Error(`无法停止任务 ${target.id}：${message(error)}`)
+    }
+    this.setNotice(result.status === 'requested'
+      ? `已请求停止任务 ${target.id}`
+      : `任务 ${target.id} 已经结束`)
   }
 
   private async commandPresets(): Promise<void> {
@@ -1528,6 +1568,7 @@ export class TuiController {
     const local = new Set([
       '/help', '/status', '/close', '/sessions', '/new', '/resume', '/rename', '/fork', '/older', '/models', '/model',
       '/queue', '/queue-edit', '/queue-remove', '/queue-steer',
+      '/jobs', '/job-kill',
       '/presets', '/preset', '/preset-read', '/preset-copy', '/preset-open', '/preset-remove',
       '/workspaces', '/workspace-new', '/workspace-rename', '/workspace-delete', '/workspace-move',
       '/workspace-session-move', '/archive', '/skills', '/subagents', '/subagent', '/back',
@@ -1552,6 +1593,7 @@ export class TuiController {
             '/models             方向键选择模型',
             '/model [p/m] [r]    方向键选择或直接切换模型',
             '/queue · /queue-edit · /queue-remove · /queue-steer',
+            '/jobs · /job-kill <id> --yes  查看/停止后台任务',
             '/presets · /preset  方向键选择或直接切换 preset',
             '/preset-read|copy|open|remove',
             '/workspaces · /workspace-new|rename|delete|move',
@@ -1606,6 +1648,8 @@ export class TuiController {
         case '/queue-edit': await this.commandQueueEdit(rest); break
         case '/queue-remove': await this.commandQueueRemove(rest); break
         case '/queue-steer': await this.commandQueueSteer(rest); break
+        case '/jobs': this.commandJobs(); break
+        case '/job-kill': await this.commandJobKill(rest); break
         case '/presets': await this.commandPresets(); break
         case '/preset': await this.commandPreset(rest); break
         case '/preset-read': await this.commandPresetRead(rest); break

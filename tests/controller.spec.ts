@@ -25,6 +25,7 @@ function fakeApi(options: {
   listError?: boolean
   hasMoreHistory?: boolean
   subagentHistoryError?: boolean
+  jobs?: Array<{ id: string; kind: string; label: string; status: string; detail?: string; startedAt: number; finishedAt?: number }>
 } = {}): {
   api: IApiClient
   create: ReturnType<typeof vi.fn>
@@ -162,6 +163,9 @@ function fakeApi(options: {
         if (signal.aborted) return
         onOpen?.()
         if (options.mux !== undefined) yield { rpcId: RpcId('mux-frame'), payload: options.mux }
+        if (options.jobs !== undefined) {
+          yield { rpcId: RpcId('mux-frame'), payload: { type: 'session/jobs' as const, sessionId: SID, jobs: options.jobs } as never }
+        }
       },
       host: async function *(payload: unknown, signal: AbortSignal) {
         void payload
@@ -537,6 +541,36 @@ describe('TuiController', () => {
     expect(fake.prompt).toHaveBeenCalledWith(expect.objectContaining({
       sessionId: SID, content: [{ type: 'text', text: '/compact' }],
     }))
+    controller.dispose()
+  })
+
+  it('lists jobs and kills a background job through the jobs extension', async () => {
+    const killJob = vi.fn(() => Promise.resolve({ status: 'requested' as const }))
+    const fake = fakeApi({
+      items: [summary()],
+      jobs: [
+        { id: 'bash-1', kind: 'bash', label: 'pytest -q', status: 'running', startedAt: 0 },
+        { id: 'bash-2', kind: 'bash', label: 'build', status: 'failed', detail: 'exit code 3', startedAt: 0, finishedAt: 1 },
+      ],
+    })
+    const controller = new TuiController(fake.api, { jobs: { kill: killJob } })
+    await controller.start({ continueLatest: false, resume: SID })
+    expect(controller.getSnapshot().jobs).toHaveLength(2)
+
+    await controller.submit('/jobs')
+    expect(controller.getSnapshot().overlay?.title).toContain('Jobs')
+    expect(controller.getSnapshot().overlay?.lines.some(line => line.includes('bash-1'))).toBe(true)
+    expect(controller.getSnapshot().overlay?.lines.some(line => line.includes('failed'))).toBe(true)
+    await controller.submit('/close')
+
+    await controller.submit('/job-kill bash-1 --yes')
+    expect(killJob).toHaveBeenCalledWith('bash-1', expect.stringContaining('TUI'))
+    expect(controller.getSnapshot().notice).toContain('bash-1')
+
+    // kill requires --yes and a matching id.
+    controller.setNotice(undefined)
+    await expect(controller.submit('/job-kill bash-2')).resolves.toBe(true)
+    expect(controller.getSnapshot().notice).toContain('--yes')
     controller.dispose()
   })
 

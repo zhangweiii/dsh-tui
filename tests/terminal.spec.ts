@@ -79,6 +79,43 @@ describe('pi-tui terminal application', () => {
     application.stop()
   })
 
+  it('separates todos, jobs, and workflows into sections when expanded', async () => {
+    const terminal = new TestTerminal(100, 24)
+    const controller = new TestController({
+      todos: [
+        { content: '已完成步骤一', status: 'completed' },
+        { content: '正在执行的步骤二', status: 'in_progress' },
+      ] as never,
+      jobs: [
+        { id: 'bash-1', kind: 'bash', label: 'pytest -q', status: 'running', startedAt: 0 },
+        { id: 'bash-2', kind: 'bash', label: 'build', status: 'failed', detail: 'exit code 3', startedAt: 0, finishedAt: 1 },
+      ] as never,
+      workflows: [{ runId: 'wf-1', name: '审计', status: 'completed', members: [] }] as never,
+    })
+    const application = new TerminalApplication(controller.asController(), { continueLatest: false }, { terminal })
+    application.start()
+    await settle(terminal)
+
+    // Collapsed combines todo and job summaries into the same strip.
+    expect(terminal.viewport()).toContain('待办 已办 1/2')
+    expect(terminal.viewport()).toContain('任务 2')
+    expect(terminal.viewport()).toContain('pytest -q')
+
+    // Ctrl+T separates each category into its own headed section.
+    terminal.send('\u0014')
+    await settle(terminal)
+    const viewport = terminal.viewport()
+    expect(viewport).toContain('待办 已办 1/2')
+    expect(viewport).toContain('✓ 已完成步骤一')
+    expect(viewport).toContain('◆ 正在执行的步骤二')
+    expect(viewport).toContain('任务 2')
+    expect(viewport).toContain('● bash · pytest -q')
+    expect(viewport).toContain('✗ bash · build（exit code 3）')
+    expect(viewport).toContain('工作流 1')
+    expect(viewport).toContain('▪ 审计')
+    application.stop()
+  })
+
   it('splits the footer into two width-balanced lines when space is tight', async () => {
     const terminal = new TestTerminal(48, 14)
     const controller = new TestController({

@@ -386,7 +386,7 @@ export class TerminalView {
     this.layout = new VStack([
       { component: this.transcript, basis: 0, grow: 1, shrink: 1, minSize: 2 },
       { component: this.notice, basis: 'auto', shrink: 0, maxSize: 1 },
-      { component: this.activity, basis: 'auto', shrink: 1, maxSize: 12 },
+      { component: this.activity, basis: 'auto', shrink: 1, maxSize: 16 },
       { component: this.composer, basis: 'auto', shrink: 1, minSize: 3, maxSize: 18 },
       { component: this.status, basis: 'auto', shrink: 0, minSize: 1, maxSize: 2 },
     ])
@@ -481,6 +481,33 @@ function renderNotice(state: TuiViewState): string[] {
   return [state.phase === 'error' ? ansi.red(`◆ ${oneLine(state.notice)}`) : ansi.yellow(`◆ ${oneLine(state.notice)}`)]
 }
 
+/** Status marker for a single background job. */
+function jobMarker(job: { status: string }): string {
+  switch (job.status) {
+    case 'running': return '●'
+    case 'stopping': return '◌'
+    case 'failed': return '✗'
+    default: return '○' // completed, killed
+  }
+}
+
+function jobColor(job: { status: string }): (text: string) => string {
+  if (job.status === 'failed') return ansi.red
+  if (job.status === 'running') return ansi.cyan
+  return ansi.dim
+}
+
+/** Status marker for a workflow run. */
+function workflowMarker(workflow: { status: string }): string {
+  switch (workflow.status) {
+    case 'running': return '▶'
+    case 'failed':
+    case 'interrupted':
+    case 'cancelled': return '✕'
+    default: return '▪' // completed
+  }
+}
+
 function renderActivity(state: TuiViewState, expanded: boolean): string[] {
   const goal = projectedGoal(state)
   const total = state.todos.length
@@ -488,40 +515,67 @@ function renderActivity(state: TuiViewState, expanded: boolean): string[] {
   const completed = total - remaining.length
   const inProgress = remaining.find(todo => todo.status === 'in_progress')
   const queueSummary = state.queueItems.slice(0, 2).map(item => oneLine(contentText(item.message.content))).join(' · ')
+  const jobRenderer = (job: { status: string; kind: string; label: string; detail?: string }): string => {
+    const detail = job.detail === undefined ? '' : `（${oneLine(job.detail)}）`
+    return `${jobColor(job)(`${jobMarker(job)}`)} ${oneLine(job.kind)} · ${oneLine(job.label)}${detail}`
+  }
   const lines: string[] = []
-  if (remaining.length > 0) {
-    // Upper padding so the todo block is not glued to the transcript above.
-    lines.push('')
-    if (expanded) {
-      // Expanded: show every todo in order, highlighting the one running now.
+  if (expanded) {
+    // Expanded: separate sections keep the plan (todo) apart from live
+    // processes (job) and multi-step runs (workflow), so many of each stay
+    // readable instead of collapsing into one ambiguous strip.
+    if (remaining.length > 0) {
       lines.push(`${ansi.bold(`待办 已办 ${String(completed)}/${String(total)}`)}`)
       for (const todo of state.todos) {
         if (todo.status === 'in_progress') {
-          lines.push(`${ansi.cyan(ansi.bold('◆'))} ${ansi.bold(oneLine(todo.content))}`)
+          lines.push(` ${ansi.cyan(ansi.bold('◆'))} ${ansi.bold(oneLine(todo.content))}`)
         } else if (todo.status === 'completed') {
-          lines.push(`${ansi.green('✓')} ${ansi.dim(oneLine(todo.content))}`)
+          lines.push(` ${ansi.green('✓')} ${ansi.dim(oneLine(todo.content))}`)
         } else {
-          lines.push(`· ${oneLine(todo.content)}`)
+          lines.push(` · ${oneLine(todo.content)}`)
         }
       }
-      // Lower padding, symmetric with the upper one, before the composer border.
-      lines.push('')
-    } else {
-      // Collapsed: progress count plus the currently executing todo, if any.
-      const summary = inProgress === undefined
-        ? remaining.slice(0, 3).map(todo => `· ${oneLine(todo.content)}`).join(' · ')
-        : `${ansi.cyan(ansi.bold('◆'))} ${ansi.bold(oneLine(inProgress.content))}`
-      lines.push(`${ansi.bold(`待办 已办 ${String(completed)}/${String(total)}`)}${summary === '' ? '' : ` · ${summary}`}`)
     }
+    if (state.jobs.length > 0) {
+      if (lines.length > 0) lines.push('')
+      lines.push(`${ansi.bold(`任务 ${String(state.jobs.length)}`)}`)
+      for (const job of state.jobs) lines.push(` ${jobRenderer(job)}`)
+    }
+    if (state.workflows.length > 0) {
+      if (lines.length > 0) lines.push('')
+      lines.push(`${ansi.bold(`工作流 ${String(state.workflows.length)}`)}`)
+      for (const workflow of state.workflows.slice(0, 8)) {
+        lines.push(` ${workflowMarker(workflow)} ${oneLine(workflow.name)}`)
+      }
+    }
+    if (goal !== undefined) {
+      if (lines.length > 0) lines.push('')
+      lines.push(`${ansi.bold(`目标 · ${goal.phase}`)} · ${ansi.cyan(oneLine(goal.objective))}`)
+    }
+    if (queueSummary !== '' && state.queueSize > 0) lines.push(ansi.dim(`队列 ${String(state.queueSize)} · ${queueSummary}`))
+    // Keep the whole block separated from both the transcript and the editor.
+    if (lines.length > 0) {
+      lines.unshift('')
+      lines.push('')
+    }
+  } else {
+    // Collapsed: a single strip pulling the todo summary and the live
+    // job/workflow summary into the same row, followed by goal and queue.
+    const todoSummary = inProgress === undefined
+      ? remaining.slice(0, 3).map(todo => `· ${oneLine(todo.content)}`).join(' · ')
+      : `${ansi.cyan(ansi.bold('◆'))} ${ansi.bold(oneLine(inProgress.content))}`
+    const segments = [
+      remaining.length > 0 ? `${ansi.bold(`待办 已办 ${String(completed)}/${String(total)}`)}${todoSummary === '' ? '' : ` · ${todoSummary}`}` : undefined,
+      state.jobs.length > 0 ? `${ansi.bold(`任务 ${String(state.jobs.length)}`)} · ${state.jobs.slice(0, 2).map(jobRenderer).join(' · ')}` : undefined,
+      state.workflows.length > 0 ? `${ansi.bold(`工作流 ${String(state.workflows.length)}`)}` : undefined,
+    ].filter(value => value !== undefined).join(' │ ')
+    // Pull the todo, job, and workflow summaries into one strip, padded above
+    // so it is not glued to the transcript.
+    if (segments !== '') lines.push('', segments)
+    if (goal !== undefined) lines.push(`${ansi.bold(`目标 · ${goal.phase}`)} · ${ansi.cyan(oneLine(goal.objective))}`)
+    if (queueSummary !== '' && state.queueSize > 0) lines.push(ansi.dim(`队列 ${String(state.queueSize)} · ${queueSummary}`))
   }
-  if (goal !== undefined) lines.push(`${ansi.bold(`目标 · ${goal.phase}`)} · ${ansi.cyan(oneLine(goal.objective))}`)
-  const activity = [
-    state.queueSize > 0 ? `队列 ${String(state.queueSize)}${queueSummary === '' ? '' : ` · ${queueSummary}`}` : undefined,
-    state.jobs.length > 0 ? `任务 ${String(state.jobs.length)} · ${state.jobs.slice(0, 2).map(job => `${job.status === 'running' ? '●' : '○'} ${oneLine(job.label)}`).join(' · ')}` : undefined,
-    state.workflows.length > 0 ? `工作流 ${String(state.workflows.length)} · ${state.workflows.slice(-2).map(workflow => `${workflow.status === 'running' ? '◆' : workflow.status === 'completed' ? '✓' : '◇'} ${oneLine(workflow.name)}`).join(' · ')}` : undefined,
-  ].filter(value => value !== undefined).join(' │ ')
-  if (activity !== '') lines.push(ansi.dim(activity))
-  return lines.slice(0, Math.max(3, expanded ? 12 : 3))
+  return lines
 }
 
 function renderStatus(state: TuiViewState, width: number): string[] {

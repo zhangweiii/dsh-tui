@@ -7,6 +7,7 @@ import type {
   CordisDynamicPackageId, CordisDynamicPluginId, DynamicCordisInventoryRow,
 } from '@deepseek-ai/dsh-cordis-host-runner/types'
 import type { PluginInventoryGateway } from '@deepseek-ai/dsh-host-plugin-inventory'
+import type { JobId } from '@deepseek-ai/dsh-jobs'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import { ProcessTerminal, type Terminal } from '@earendil-works/pi-tui'
 import type {} from '@deepseek-ai/cordis-plugin-loader'
@@ -35,6 +36,10 @@ export const internals: TerminalIo = {
 
 function asSessionId(value: string): SessionId {
   return value as SessionId
+}
+
+function asJobId(value: string): JobId {
+  return value as JobId
 }
 
 /** Mount the TUI only after the complete profile tree has settled. */
@@ -90,6 +95,13 @@ export function apply(ctx: Context, config: Config): void {
           downloads: apiProxy.downloads,
           ...(feedback === undefined ? {} : { feedback }),
           plugins: { list: () => inventory.list().entries },
+          jobs: {
+            kill: async (id, reason) => {
+              const jobs = ctx.get('jobs')
+              if (jobs === undefined) throw new Error('Host 未提供背景任务注册表 ctx.jobs')
+              return { status: jobs.kill(asJobId(id), undefined, reason) }
+            },
+          },
           cordis: {
             inventory: cordisRows,
             runHostOnly: async (sessionId, pluginId, requestedPackageId) => {

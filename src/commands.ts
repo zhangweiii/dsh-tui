@@ -25,6 +25,8 @@ export const TUI_COMMANDS: readonly CommandDescriptor[] = [
   { command: '/queue-edit', description: '编辑待处理消息', input: '<item-id> <text>' },
   { command: '/queue-remove', description: '删除待处理消息', input: '<item-id> --yes' },
   { command: '/queue-steer', description: '把消息插入当前轮次', input: '<item-id>' },
+  { command: '/jobs', description: '查看后台任务' },
+  { command: '/job-kill', description: '停止后台任务', input: '<id-or-prefix> --yes' },
   { command: '/presets', description: '选择 Agent preset' },
   { command: '/preset', description: '选择或直接切换 Agent preset', input: '[id]' },
   { command: '/preset-read', description: '查看 preset', input: '<id>' },
