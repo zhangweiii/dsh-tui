@@ -196,9 +196,9 @@ class TranscriptDocument implements Component {
         lines.push(ansi.gray(` ${line}${marker}`))
       })
     }
-    if (partialText !== '') lines.push(ansi.cyan(`${oneLine(partialText)}▍`))
+    if (partialText !== '') lines.push(ansi.cyan(` ${oneLine(partialText)}▍`))
     if (partialTool !== undefined) {
-      lines.push(ansi.yellow(`◆ ${partialTool.name || '工具'} ${oneLine(partialTool.arguments)}`))
+      lines.push(ansi.yellow(` ◆ ${partialTool.name || '工具'} ${oneLine(partialTool.arguments)}`))
     }
     return lines.map(line => truncateToWidth(line, width, '…'))
   }

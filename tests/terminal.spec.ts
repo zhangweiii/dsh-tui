@@ -153,6 +153,38 @@ describe('pi-tui terminal application', () => {
     application.stop()
   })
 
+  it('indents streaming reply text and tool lines like committed rows', async () => {
+    const terminal = new TestTerminal(80, 18)
+    const rows = Array.from({ length: 30 }, (_, index) => ({
+      id: `assistant-${String(index)}`,
+      seq: index,
+      kind: 'assistant' as const,
+      text: `消息 ${String(index)}`,
+    }))
+    const controller = new TestController({ running: true, rows })
+    const application = new TerminalApplication(controller.asController(), { continueLatest: false }, { terminal })
+    application.start()
+    await settle(terminal)
+
+    controller.publish({
+      partialReasoning: '先思考一些内容',
+      partialText: '回复的第一行文字',
+      partialTool: { name: 'bash', arguments: 'ls -la' },
+    })
+    await settle(terminal)
+
+    const lines = terminal.viewportLines()
+    const start = lines.findIndex(line => line.includes('思考中'))
+    expect(start).toBeGreaterThan(-1)
+    const end = lines.findIndex((line, index) => index > start && line.includes('bash ls -la'))
+    expect(end).toBeGreaterThan(start)
+    const block = lines.slice(start, end + 1)
+
+    expect(block.some(line => line.includes('回复的第一行文字'))).toBe(true)
+    expect(block.every(line => line.startsWith(' '))).toBe(true)
+    application.stop()
+  })
+
   it('uses ScrollView follow-end and preserves a manual scroll position while content grows', async () => {
     const terminal = new TestTerminal(90, 18)
     const rows: TuiViewState['rows'] = Array.from({ length: 30 }, (_, index) => ({
