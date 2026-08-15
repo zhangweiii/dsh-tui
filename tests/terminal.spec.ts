@@ -36,7 +36,7 @@ describe('pi-tui terminal application', () => {
     lines = terminal.viewportLines()
     expect(terminal.viewport()).toContain('待办 1/1 · ◆ 只在需要时展示')
     expect(lines.findIndex(line => line.includes('待办 1/1')))
-      .toBeLessThan(lines.findIndex(line => line.includes('Enter 发送')))
+      .toBeGreaterThan(lines.findIndex(line => line.includes('Enter 发送')))
     application.stop()
   })
 
@@ -57,6 +57,26 @@ describe('pi-tui terminal application', () => {
     expect(statusLine).toBeGreaterThan(-1)
     expect(lines[statusLine]).toContain('standard · deepseek/reasoner')
     expect(lines[statusLine + 1]).toContain('/work/dsh-tui · 3 轮 · 7 步')
+    application.stop()
+  })
+
+  it('shows thinking effort and model context window in the status line', async () => {
+    const terminal = new TestTerminal(120, 14)
+    const controller = new TestController({
+      model: 'deepseek/reasoner',
+      reasoningEffort: 'high',
+      modelContextWindow: 128_000,
+      projections: { contextPressure: { projectedTokens: 64_000, contextWindow: 128_000 } },
+    })
+    const application = new TerminalApplication(controller.asController(), { continueLatest: false }, { terminal })
+    application.start()
+    await settle(terminal)
+
+    const viewport = terminal.viewport()
+    expect(viewport).toContain('deepseek/reasoner')
+    expect(viewport).toContain('high')
+    expect(viewport).toContain('128.0k')
+    expect(viewport).toContain('50%')
     application.stop()
   })
 
@@ -99,8 +119,37 @@ describe('pi-tui terminal application', () => {
     expect(viewport).toContain('第一项')
     expect(viewport).toContain('第 8 次流式更新')
     expect(viewport).toContain('待办 1/1')
-    expect(viewport).toContain('Enter 发送')
+    expect(viewport).toContain('> ')
     expect(application.tui.fullRedraws).toBeLessThanOrEqual(2)
+    application.stop()
+  })
+
+  it('rolls the live reasoning tail with a uniform indent and no stray blank rows', async () => {
+    const terminal = new TestTerminal(80, 18)
+    const controller = new TestController({ running: true })
+    const application = new TerminalApplication(controller.asController(), { continueLatest: false }, { terminal })
+    application.start()
+    await settle(terminal)
+
+    const head = '旧内容开头'
+    const middle = Array.from({ length: 40 }, (_, index) => `中间行 ${String(index)} ${'字'.repeat(30)}`).join('\n')
+    const tail = '最新思考内容出现在结尾'
+    // paragraph breaks and a trailing newline must not surface as empty rows
+    controller.publish({ partialReasoning: `${head}\n\n${middle}\n\n${tail}\n` })
+    await settle(terminal)
+
+    const lines = terminal.viewportLines()
+    const start = lines.findIndex(line => line.includes('思考中'))
+    expect(start).toBeGreaterThan(-1)
+    const end = lines.findIndex((line, index) => index > start && line.includes(tail))
+    expect(end).toBeGreaterThan(start)
+    const block = lines.slice(start, end + 1)
+
+    expect(block[0]).toContain('思考中')
+    expect(block.some(line => line.includes(tail))).toBe(true)
+    expect(block.every(line => line.trim() !== '')).toBe(true)
+    expect(block.every(line => line.startsWith(' '))).toBe(true)
+    expect(lines.join('\n')).not.toContain(head)
     application.stop()
   })
 

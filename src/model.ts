@@ -108,6 +108,8 @@ export interface TuiViewState {
   agentPreset: string | undefined
   cwd: string | undefined
   model: string | undefined
+  reasoningEffort: string | undefined
+  modelContextWindow: number | undefined
   running: boolean
   rows: TranscriptRow[]
   partialText: string
@@ -135,6 +137,7 @@ export interface TuiProjectionStatus {
   permission?: string
   plan?: { active: boolean; pending: boolean }
   context?: { used: number; window: number; percent: number }
+  contextWindow?: number
   contextBreakdown?: { system: number; tools: number; messages: number }
   tokens?: { input: number; output: number }
   session?: { turns: number; steps: number }
@@ -153,6 +156,8 @@ export function createInitialState(): TuiViewState {
     agentPreset: undefined,
     cwd: undefined,
     model: undefined,
+    reasoningEffort: undefined,
+    modelContextWindow: undefined,
     running: false,
     rows: [],
     partialText: '',
@@ -308,6 +313,7 @@ export function projectionStatus(projections: Record<string, unknown>): TuiProje
   if (used !== undefined && window !== undefined && window > 0) {
     result.context = { used, window, percent: Math.max(0, Math.min(100, Math.round(used / window * 100))) }
   }
+  if (window !== undefined && window > 0) result.contextWindow = window
 
   const breakdown = object(projections.contextBreakdown)
   const system = finiteNumber(breakdown, 'systemTokens')
@@ -744,6 +750,12 @@ export function applySessionEvent(
       })
     }
     case 'agent-preset/selected': return { ...next, agentPreset: event.data.agentPreset }
+    case 'request/header': return {
+      ...next,
+      model: `${event.data.header.config.provider}/${event.data.header.config.model}`,
+      reasoningEffort: event.data.header.config.reasoningEffort,
+    }
+    case 'request/context': return { ...next, modelContextWindow: event.data.contextWindow }
     case 'todo/write': return { ...next, todos: event.data.todos }
     case 'tool-workflow/run-start': {
       const workflow: WorkflowRun = {

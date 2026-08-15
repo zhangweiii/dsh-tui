@@ -5,8 +5,8 @@ import { basename, extname, resolve } from 'node:path'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import type {
-  DownloadsApi, GoalRef, HistoryEntry, IApiClient, PromptContentPart, QueuedInboxItem, RpcResponse,
-  SessionSummary, SubagentAddress, WorkspaceId,
+  DownloadsApi, GoalRef, HistoryEntry, IApiClient, ModelProviderGroup, PromptContentPart,
+  QueuedInboxItem, RpcResponse, SessionSummary, SubagentAddress, WorkspaceId,
 } from '@deepseek-ai/dsh-host-apiproxy'
 import type { AttachmentId, ImageMediaType } from '@deepseek-ai/dsh-attachment'
 import type { MessageId } from '@deepseek-ai/dsh-llm/brand'
@@ -207,6 +207,7 @@ export class TuiController {
   private historyEntries: HistoryEntry[] = []
   private hasMoreHistory = false
   private historyResyncing = false
+  private modelGroups: ModelProviderGroup[] = []
 
   /**
    * @param api - Payload-direct client over the in-process ApiProxy fetch carrier.
@@ -407,6 +408,8 @@ export class TuiController {
       agentPreset: current.agentPreset,
       cwd: current.cwd,
       model: current.model,
+      reasoningEffort: current.reasoningEffort,
+      modelContextWindow: current.modelContextWindow,
       running: current.running,
       queueSize: current.queueSize,
       queueItems: current.queueItems,
@@ -448,14 +451,23 @@ export class TuiController {
     this.historyEntries = [...history.events]
     this.hasMoreHistory = history.hasMore
     let next = applyHistory(this.state, history.events)
+    if (modelsResponse.result.ok) this.modelGroups = modelsResponse.result.value.groups
     const model = modelsResponse.result.ok
       ? `${modelsResponse.result.value.current.provider}/${modelsResponse.result.value.current.model}`
+      : undefined
+    const reasoningEffort = modelsResponse.result.ok
+      ? modelsResponse.result.value.current.reasoningEffort
+        ?? this.catalogDefaultEffort(
+          modelsResponse.result.value.current.provider,
+          modelsResponse.result.value.current.model,
+        )
       : undefined
     const projections = { ...next.projections, ...(history.projections?.values ?? {}) }
     next = {
       ...next,
       phase: 'ready',
       model,
+      reasoningEffort,
       projections,
       title: projectedTitle(projections),
       ...(modelsResponse.result.ok
@@ -622,6 +634,14 @@ export class TuiController {
     )
   }
 
+  /** Adapter-advertised default thinking effort for one exact model route. */
+  private catalogDefaultEffort(provider: string, model: string): string | undefined {
+    return this.modelGroups
+      .find(group => group.id === provider)
+      ?.models.find(item => item.id === model)
+      ?.reasoning?.defaultEffort
+  }
+
   private async commandModels(): Promise<void> {
     await this.commandModel('', undefined)
   }
@@ -629,6 +649,7 @@ export class TuiController {
   private async commandModel(route: string, effort: string | undefined): Promise<void> {
     if (route === '') {
       const models = value(await this.api.sessions.models({ sessionId: this.selectedSessionId() }))
+      this.modelGroups = models.groups
       const items = models.groups.flatMap(group => group.models.map(model => ({
         value: `${group.id}/${model.id}`,
         label: `${model.name} · ${group.name}`,
@@ -654,6 +675,7 @@ export class TuiController {
     this.update(state => ({
       ...state,
       model: `${selected.provider}/${selected.model}`,
+      reasoningEffort: selected.reasoningEffort ?? this.catalogDefaultEffort(selected.provider, selected.model),
       overlay: undefined,
       picker: undefined,
     }))
@@ -709,6 +731,8 @@ export class TuiController {
       agentPreset: current.agentPreset,
       cwd: current.cwd,
       model: current.model,
+      reasoningEffort: current.reasoningEffort,
+      modelContextWindow: current.modelContextWindow,
       running: current.running,
       queueSize: current.queueSize,
       queueItems: current.queueItems,
@@ -1454,7 +1478,7 @@ export class TuiController {
       `会话：${this.state.sessionId ?? '—'}`,
       `标题：${this.state.title ?? '—'}`,
       `Preset：${this.state.agentPreset ?? '—'}`,
-      `模型：${this.state.model ?? '—'}`,
+      `模型：${this.state.model ?? '—'}${this.state.reasoningEffort === undefined ? '' : ` · ${this.state.reasoningEffort}`}`,
       `目录：${this.state.cwd ?? '—'}`,
       `队列/任务/待办/工作流：${String(this.state.queueSize)}/${String(this.state.jobs.length)}/${String(this.state.todos.length)}/${String(this.state.workflows.length)}`,
     ]

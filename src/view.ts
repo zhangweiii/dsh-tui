@@ -3,7 +3,7 @@
 import type { AskUserQuestionItem } from '@deepseek-ai/dsh-user-questions/types'
 import {
   Editor, Markdown, ScrollView, SelectList, stripTerminalSequences, Text, truncateToWidth, visibleWidth, VStack,
-  type Component, type Focusable, type SelectItem, type TUI,
+  wrapTextWithAnsi, type Component, type Focusable, type SelectItem, type TUI,
 } from '@earendil-works/pi-tui'
 import { contentText, projectionStatus, type TranscriptRow, type TuiViewState } from './model.ts'
 import { ansi, editorTheme, markdownTheme, selectListTheme } from './theme.ts'
@@ -17,6 +17,25 @@ function shorten(value: string | undefined, maximum: number): string {
 
 function oneLine(value: string): string {
   return value.replaceAll(/\s*\n\s*/gu, ' ').trim()
+}
+
+const THINKING_LABEL = '思考中'
+const THINKING_TAIL_LINES = 3
+
+/**
+ * Rolling tail of the live reasoning stream: at most `maximum` non-blank screen
+ * rows of the most recent content. Older rows fall out as new reasoning arrives,
+ * so the freshest thinking always stays visible instead of freezing on the head
+ * of the buffer once it overflows a single truncated line. Blank rows from
+ * paragraph breaks and trailing newlines are dropped so they never appear as
+ * stray empty lines inside the window.
+ */
+function reasoningTail(text: string, width: number, maximum: number): string[] {
+  const budget = Math.max(1, width * maximum)
+  const suffix = text.length <= budget ? text : `…${text.slice(-Math.max(1, budget - 1))}`
+  return wrapTextWithAnsi(suffix, Math.max(1, width))
+    .filter(line => line.trim() !== '')
+    .slice(-maximum)
 }
 
 function limitedLines(value: string, maximum: number): string {
@@ -144,7 +163,10 @@ class TranscriptDocument implements Component {
     const rendered: string[] = []
     const retained = new Set<string>()
     if (this.state.rows.length === 0) {
-      rendered.push(...new Text(ansi.dim('输入消息开始对话；支持 / 命令、实时工具输出与持久会话。'), 1, 1).render(width))
+      rendered.push(...new Text(ansi.dim([
+        '输入消息开始对话；支持 / 命令、实时工具输出与持久会话。',
+        'Enter 发送 · Tab/↑↓ 补全命令 · Alt+Enter 插话 · Shift+Enter 换行 · Esc 清空/取消 · Ctrl+C 退出',
+      ].join('\n')), 1, 1).render(width))
     }
     for (const row of this.state.rows) {
       retained.add(row.id)
@@ -167,7 +189,12 @@ class TranscriptDocument implements Component {
     if (partialReasoning === '' && partialText === '' && partialTool === undefined) return []
     const lines: string[] = ['']
     if (partialReasoning !== '') {
-      lines.push(ansi.gray(`思考中 · ${oneLine(partialReasoning)} ▍`))
+      lines.push(ansi.gray(ansi.bold(` ${THINKING_LABEL}`)))
+      const tail = reasoningTail(partialReasoning, Math.max(1, width - 3), THINKING_TAIL_LINES)
+      tail.forEach((line, index) => {
+        const marker = index === tail.length - 1 ? ' ▍' : ''
+        lines.push(ansi.gray(` ${line}${marker}`))
+      })
     }
     if (partialText !== '') lines.push(ansi.cyan(`${oneLine(partialText)}▍`))
     if (partialTool !== undefined) {
@@ -399,10 +426,7 @@ export class TerminalView {
     }
     this.pickerSignature = ''
     this.picker = undefined
-    this.composer.set([
-      this.editorBox,
-      new Text(ansi.dim('Enter 发送 · Tab/↑↓ 补全命令 · Alt+Enter 插话 · Shift+Enter 换行 · Esc 清空/取消 · Ctrl+C 退出'), 1, 0),
-    ], this.editorBox)
+    this.composer.set([this.editorBox], this.editorBox)
   }
 }
 
@@ -459,14 +483,17 @@ function renderStatus(state: TuiViewState, width: number): string[] {
     : status.plan.pending
       ? ansi.yellow(`计划${status.plan.active ? '关闭' : '开启'} · 切换中`)
       : status.plan.active ? ansi.cyan('计划') : undefined
+  const contextWindow = state.modelContextWindow ?? status.contextWindow
   return balanceSegments([
     phaseLabel,
     state.agentPreset === undefined ? undefined : ansi.bold(state.agentPreset),
     state.model === undefined ? undefined : ansi.dim(shorten(state.model, 36)),
+    state.reasoningEffort,
     state.cwd === undefined ? undefined : ansi.dim(shorten(state.cwd, Math.max(18, Math.floor(width / 3)))),
     status.session === undefined ? undefined : `${String(status.session.turns)} 轮 · ${String(status.session.steps)} 步`,
     status.tokens === undefined ? undefined : `↑${formatCount(status.tokens.input)} ↓${formatCount(status.tokens.output)}`,
     context,
+    contextWindow === undefined ? undefined : formatCount(contextWindow),
     state.queueSize > 0 ? `队列 ${String(state.queueSize)}` : undefined,
     state.jobs.length > 0 ? `任务 ${String(state.jobs.length)}` : undefined,
     status.permission === undefined ? undefined : ansi.cyan(shorten(status.permission, 18)),

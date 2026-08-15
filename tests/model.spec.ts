@@ -259,6 +259,26 @@ describe('tui view projection', () => {
     }).notice).toBe('断开')
   })
 
+  it('tracks the model route, thinking effort, and context window from request metadata', () => {
+    let state = createInitialState()
+    state = applySessionEvent(state, event('request/header', 0, {
+      header: { config: { provider: 'deepseek', model: 'reasoner', reasoningEffort: 'high' } },
+      reason: 'initial',
+    }))
+    expect(state).toMatchObject({
+      model: 'deepseek/reasoner', reasoningEffort: 'high', modelContextWindow: undefined,
+    })
+    state = applySessionEvent(state, event('request/context', 1, {
+      provider: 'deepseek', model: 'reasoner', contextWindow: 128_000,
+    }))
+    expect(state.modelContextWindow).toBe(128_000)
+    state = applySessionEvent(state, event('request/header', 2, {
+      header: { config: { provider: 'deepseek', model: 'chat' } },
+      reason: 'change',
+    }))
+    expect(state).toMatchObject({ model: 'deepseek/chat', reasoningEffort: undefined })
+  })
+
   it('keeps the current title and agent preset aligned with durable updates', () => {
     let state: TuiViewState = { ...createInitialState(), sessionId: SID }
     state = applyMuxFrame(state, RpcId('title'), {
@@ -282,6 +302,7 @@ describe('tui view projection', () => {
       permission: 'workspace-write',
       plan: { active: false, pending: true },
       context: { used: 25_000, window: 100_000, percent: 25 },
+      contextWindow: 100_000,
       contextBreakdown: { system: 1000, tools: 2000, messages: 3000 },
       tokens: { input: 60, output: 40 },
       session: { turns: 2, steps: 5 },
