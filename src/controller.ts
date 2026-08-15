@@ -558,6 +558,11 @@ export class TuiController {
     return matches[0] as SessionSummary
   }
 
+  /** Hide blank sessions from pickers; the currently loaded session stays visible for context. */
+  private pickerSessions(items: readonly SessionSummary[]): SessionSummary[] {
+    return items.filter(item => !item.blank || item.sessionId === this.state.sessionId)
+  }
+
   private showSessionPicker(items: readonly SessionSummary[], title = '选择会话'): void {
     if (items.length === 0) throw new Error('没有可选择的会话')
     this.showPicker({
@@ -585,6 +590,7 @@ export class TuiController {
       const ids = new Set(hits.map(hit => hit.sessionId))
       shown = items.filter(item => ids.has(item.sessionId))
     }
+    shown = this.pickerSessions(shown)
     if (shown.length === 0) throw new Error('没有匹配的会话')
     this.showSessionPicker(shown, query === '' ? '选择会话' : `选择会话 · ${query}`)
   }
@@ -606,7 +612,7 @@ export class TuiController {
   private async commandResume(query: string): Promise<void> {
     const items = await this.refreshSessions()
     if (query === '') {
-      this.showSessionPicker(items)
+      this.showSessionPicker(this.pickerSessions(items))
       return
     }
     const summary = await this.attachWorkspaceSession(this.findSession(items, query))

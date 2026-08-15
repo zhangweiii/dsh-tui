@@ -562,6 +562,23 @@ describe('TuiController', () => {
     controller.dispose()
   })
 
+  it('hides blank sessions from pickers but keeps the loaded one visible', async () => {
+    const BLANK = SessionId('session-blank')
+    const fake = fakeApi({ items: [summary(), summary(BLANK, { blank: true, updatedAt: 1 })] })
+    const controller = new TuiController(fake.api)
+    await controller.start({ continueLatest: false, resume: SID })
+
+    await controller.submit('/sessions')
+    expect(controller.getSnapshot().picker?.items.map(item => item.value)).toEqual([SID])
+
+    await controller.submit(`/resume ${BLANK}`)
+    expect(controller.getSnapshot().sessionId).toBe(BLANK)
+
+    await controller.submit('/sessions')
+    expect(controller.getSnapshot().picker?.items.map(item => item.value)).toEqual([SID, BLANK])
+    controller.dispose()
+  })
+
   it('mutates queue items by stable id and requires confirmation before removal', async () => {
     const fake = fakeApi({
       items: [summary()],
