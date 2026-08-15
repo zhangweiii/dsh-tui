@@ -30,13 +30,6 @@ function formatCount(value: number): string {
     : value >= 1_000 ? `${(value / 1_000).toFixed(1)}k` : String(value)
 }
 
-function sessionDisplayTitle(state: TuiViewState): string {
-  if (state.title !== undefined) return state.title
-  const cwd = state.cwd?.replace(/[/\\]+$/u, '')
-  const basename = cwd?.split(/[/\\]/u).pop()
-  return basename || String(state.sessionId ?? '未命名会话')
-}
-
 function projectedGoal(state: TuiViewState): { objective: string; phase: string } | undefined {
   const projection = state.projections.goal
   if (typeof projection !== 'object' || projection === null || !('goal' in projection)) return undefined
@@ -46,13 +39,24 @@ function projectedGoal(state: TuiViewState): { objective: string; phase: string 
   return { objective: goal.objective, phase: goal.phase }
 }
 
-function alignColumns(left: string, right: string, width: number): string {
-  if (right === '') return truncateToWidth(left, width, '…')
-  const rightWidth = visibleWidth(right)
-  if (rightWidth >= width) return truncateToWidth(right, width, '…')
-  const leftWidth = Math.max(0, width - rightWidth - 1)
-  const clippedLeft = truncateToWidth(left, leftWidth, '…')
-  return `${clippedLeft}${' '.repeat(Math.max(1, width - visibleWidth(clippedLeft) - rightWidth))}${right}`
+const STATUS_SEPARATOR = ' · '
+
+/** Join segments on one line when they fit, otherwise split into two width-balanced lines. */
+function balanceSegments(segments: string[], width: number): string[] {
+  if (segments.length === 0) return ['']
+  const single = segments.join(STATUS_SEPARATOR)
+  if (visibleWidth(single) <= width) return [single]
+  let split = 1
+  let score = Number.POSITIVE_INFINITY
+  for (let candidate = 1; candidate < segments.length; candidate += 1) {
+    const first = visibleWidth(segments.slice(0, candidate).join(STATUS_SEPARATOR))
+    const second = visibleWidth(segments.slice(candidate).join(STATUS_SEPARATOR))
+    if (Math.abs(first - second) < score) {
+      score = Math.abs(first - second)
+      split = candidate
+    }
+  }
+  return [segments.slice(0, split).join(STATUS_SEPARATOR), segments.slice(split).join(STATUS_SEPARATOR)]
 }
 
 function statusIcon(row: TranscriptRow): string {
@@ -272,7 +276,7 @@ export class TerminalView {
       { component: this.notice, basis: 'auto', shrink: 0, maxSize: 1 },
       { component: this.activity, basis: 'auto', shrink: 1, maxSize: 3 },
       { component: this.composer, basis: 'auto', shrink: 1, minSize: 3, maxSize: 18 },
-      { component: this.status, basis: 2, shrink: 0, minSize: 2, maxSize: 2 },
+      { component: this.status, basis: 'auto', shrink: 0, minSize: 1, maxSize: 2 },
     ])
     this.update(state, 0, false)
   }
@@ -383,28 +387,31 @@ function renderActivity(state: TuiViewState): string[] {
 
 function renderStatus(state: TuiViewState, width: number): string[] {
   const status = projectionStatus(state.projections)
-  const planTarget = status.plan === undefined ? undefined : status.plan.pending ? !status.plan.active : status.plan.active
   const phase = state.phase === 'loading' ? '正在连接' : state.phase === 'error' ? '启动失败' : state.running ? '执行中' : '就绪'
   const phaseLabel = state.phase === 'error'
     ? ansi.red(`● ${phase}`)
     : state.running ? ansi.yellow(`● ${phase}`) : ansi.green(`● ${phase}`)
-  const parts = [
+  const context = status.context === undefined
+    ? undefined
+    : status.context.percent >= 85
+      ? ansi.red(`${String(status.context.percent)}%`)
+      : status.context.percent >= 65 ? ansi.yellow(`${String(status.context.percent)}%`) : ansi.green(`${String(status.context.percent)}%`)
+  const plan = status.plan === undefined
+    ? undefined
+    : status.plan.pending
+      ? ansi.yellow(`计划${status.plan.active ? '关闭' : '开启'} · 切换中`)
+      : status.plan.active ? ansi.cyan('计划') : undefined
+  return balanceSegments([
     phaseLabel,
-    state.cwd === undefined ? undefined : `目录 ${ansi.dim(shorten(state.cwd, Math.max(18, Math.floor(width / 3))))}`,
-    status.session === undefined ? undefined : `轮次 ${String(status.session.turns)} · 步骤 ${String(status.session.steps)}`,
-    status.tokens === undefined ? undefined : `Token ↑${formatCount(status.tokens.input)} ↓${formatCount(status.tokens.output)}`,
-    status.context === undefined ? undefined : `上下文 ${status.context.percent >= 85 ? ansi.red(String(status.context.percent)) : status.context.percent >= 65 ? ansi.yellow(String(status.context.percent)) : ansi.green(String(status.context.percent))}%${width >= 140 ? ` · ${formatCount(status.context.used)}/${formatCount(status.context.window)}` : ''}`,
+    state.agentPreset === undefined ? undefined : ansi.bold(state.agentPreset),
+    state.model === undefined ? undefined : ansi.dim(shorten(state.model, 36)),
+    state.cwd === undefined ? undefined : ansi.dim(shorten(state.cwd, Math.max(18, Math.floor(width / 3)))),
+    status.session === undefined ? undefined : `${String(status.session.turns)} 轮 · ${String(status.session.steps)} 步`,
+    status.tokens === undefined ? undefined : `↑${formatCount(status.tokens.input)} ↓${formatCount(status.tokens.output)}`,
+    context,
     state.queueSize > 0 ? `队列 ${String(state.queueSize)}` : undefined,
     state.jobs.length > 0 ? `任务 ${String(state.jobs.length)}` : undefined,
-    width < 100 || status.permission === undefined ? undefined : `权限 ${ansi.cyan(shorten(status.permission, 18))}`,
-    width < 100 || planTarget === undefined ? undefined : `计划 ${status.plan?.pending === true ? ansi.yellow(`${planTarget ? '开启' : '关闭'} · 切换中`) : ansi.cyan(planTarget ? '开启' : '关闭')}`,
-  ].filter(value => value !== undefined)
-  return [
-    alignColumns(
-      ansi.bold(`${sessionDisplayTitle(state)}${state.agentPreset === undefined ? '' : ` · ${state.agentPreset}`}`),
-      ansi.dim(shorten(state.model, 36)),
-      width,
-    ),
-    parts.join(' · '),
-  ]
+    status.permission === undefined ? undefined : ansi.cyan(shorten(status.permission, 18)),
+    plan,
+  ].filter(value => value !== undefined), width)
 }

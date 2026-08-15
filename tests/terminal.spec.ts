@@ -23,10 +23,9 @@ describe('pi-tui terminal application', () => {
     let lines = terminal.viewportLines()
     expect(terminal.viewport()).not.toContain('DEEPSEEK HARNESS TUI')
     expect(terminal.viewport()).not.toContain('待办 0/0')
-    expect(lines.findIndex(line => line.includes('终端布局 · standard')))
+    expect(lines.findIndex(line => line.includes('standard · deepseek/reasoner')))
       .toBeGreaterThan(lines.findIndex(line => line.includes('Enter 发送')))
-    expect(terminal.viewport()).toContain('deepseek/reasoner')
-    expect(terminal.viewport()).toContain('/work/dsh-tui')
+    expect(lines.some(line => line.includes('standard · deepseek/reasoner · /work/dsh-tui'))).toBe(true)
 
     controller.publish({ todos: [{ content: '已经完成', status: 'completed' }] as never })
     await settle(terminal)
@@ -38,6 +37,26 @@ describe('pi-tui terminal application', () => {
     expect(terminal.viewport()).toContain('待办 1/1 · ◆ 只在需要时展示')
     expect(lines.findIndex(line => line.includes('待办 1/1')))
       .toBeLessThan(lines.findIndex(line => line.includes('Enter 发送')))
+    application.stop()
+  })
+
+  it('splits the footer into two width-balanced lines when space is tight', async () => {
+    const terminal = new TestTerminal(48, 14)
+    const controller = new TestController({
+      agentPreset: 'standard',
+      cwd: '/work/dsh-tui',
+      model: 'deepseek/reasoner',
+      projections: { sessionStats: { turns: 3, steps: 7 } },
+    })
+    const application = new TerminalApplication(controller.asController(), { continueLatest: false }, { terminal })
+    application.start()
+    await settle(terminal)
+
+    const lines = terminal.viewportLines()
+    const statusLine = lines.findIndex(line => line.includes('● 就绪'))
+    expect(statusLine).toBeGreaterThan(-1)
+    expect(lines[statusLine]).toContain('standard · deepseek/reasoner')
+    expect(lines[statusLine + 1]).toContain('/work/dsh-tui · 3 轮 · 7 步')
     application.stop()
   })
 
@@ -73,8 +92,8 @@ describe('pi-tui terminal application', () => {
     const viewport = terminal.viewport()
     expect(terminal.viewportLines()).toHaveLength(20)
     expect(count(viewport, 'DEEPSEEK HARNESS TUI')).toBe(0)
-    expect(count(viewport, '轮次')).toBe(1)
-    expect(viewport).toContain('轮次 8 · 步骤 9')
+    expect(count(viewport, '轮')).toBe(1)
+    expect(viewport).toContain('8 轮 · 9 步')
     expect(viewport).not.toContain('**验证结果：**')
     expect(viewport).toContain('验证结果：')
     expect(viewport).toContain('第一项')
