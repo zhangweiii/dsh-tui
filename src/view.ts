@@ -5,7 +5,7 @@ import {
   Editor, Markdown, ScrollView, SelectList, stripTerminalSequences, Text, truncateToWidth, visibleWidth, VStack,
   wrapTextWithAnsi, type Component, type Focusable, type SelectItem, type TUI,
 } from '@earendil-works/pi-tui'
-import { contentText, projectionStatus, type TranscriptRow, type TuiViewState } from './model.ts'
+import { contentText, isExpandedRow, projectionStatus, type TranscriptRow, type TuiViewState } from './model.ts'
 import { ansi, editorTheme, markdownTheme, selectListTheme } from './theme.ts'
 
 const OSC133_PROMPT_START = '\u001B]133;A\u0007'
@@ -104,15 +104,40 @@ const CARD_LABELS: Partial<Record<TranscriptRow['kind'], string>> = {
   retry: '重试',
 }
 
-function rowComponent(row: TranscriptRow): Component {
+const COLLAPSED_MARKER = '▸'
+const EXPANDED_MARKER = '▾'
+
+/**
+ * One verbose card row, mirroring the Web disclosure row. Rows with a detail
+ * (skill catalog, injected context, tool output, compaction, retries, …) render
+ * folded into a one-line header so they do not crowd the transcript; the detail
+ * is unfolded on demand with Ctrl+Shift+E, and a running row stays unfolded.
+ * @param row - The card row to render.
+ * @param label - Terminal label for this row kind.
+ * @param expanded - Whether this row's detail is currently unfolded.
+ */
+function cardRow(row: TranscriptRow, label: string, expanded: boolean): Component {
+  const style = row.kind === 'context' ? ansi.dim : statusStyle(row)
+  const icon = row.kind === 'context' ? '' : `${statusIcon(row)} `
+  const marker = expanded ? EXPANDED_MARKER : COLLAPSED_MARKER
+  const children: Component[] = [
+    new Text(`\n${marker} ${style(ansi.bold(`${icon}${label} · ${row.text}`))}`, 1, 0),
+  ]
+  if (expanded && row.detail !== undefined) children.push(new Text(ansi.dim(limitedLines(row.detail, 12)), 2, 0))
+  return new VStack(children)
+}
+
+function rowComponent(row: TranscriptRow, rowExpanded: boolean): Component {
   const cardLabel = CARD_LABELS[row.kind]
-  if (cardLabel !== undefined) {
-    const style = statusStyle(row)
+  if (cardLabel !== undefined && row.kind !== 'deliverable') {
+    return cardRow(row, cardLabel, rowExpanded)
+  }
+  if (row.kind === 'deliverable') {
     const children: Component[] = [
-      new Text(`\n${style(ansi.bold(`${statusIcon(row)} ${cardLabel} · ${row.text}`))}`, 1, 0),
+      new Text(`\n${ansi.green(ansi.bold(`✓ ${cardLabel} · ${row.text}`))}`, 1, 0),
     ]
     if (row.detail !== undefined) children.push(new Text(ansi.dim(limitedLines(row.detail, 12)), 2, 0))
-    if (row.kind === 'deliverable') children.push(new Text(ansi.dim('使用 /open <path> 打开'), 2, 0))
+    children.push(new Text(ansi.dim('使用 /open <path> 打开'), 2, 0))
     return new VStack(children)
   }
 
@@ -170,10 +195,11 @@ class TranscriptDocument implements Component {
     }
     for (const row of this.state.rows) {
       retained.add(row.id)
-      const signature = `${row.kind}\u0000${row.text}\u0000${row.detail ?? ''}\u0000${row.status ?? ''}\u0000${row.messageId ?? ''}`
+      const rowExpanded = isExpandedRow(row, this.state.expanded)
+      const signature = `${row.kind}\u0000${row.text}\u0000${row.detail ?? ''}\u0000${row.status ?? ''}\u0000${row.messageId ?? ''}\u0000${String(rowExpanded)}`
       let cached = this.cache.get(row.id)
       if (cached === undefined || cached.signature !== signature) {
-        cached = { signature, component: rowComponent(row) }
+        cached = { signature, component: rowComponent(row, rowExpanded) }
         this.cache.set(row.id, cached)
       }
       rendered.push(...cached.component.render(width))

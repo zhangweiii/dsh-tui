@@ -141,6 +141,10 @@ export class TerminalApplication {
       }
       return { consume: true }
     }
+    if (matchesKey(data, 'ctrl+shift+e')) {
+      this.controller.toggleFold()
+      return { consume: true }
+    }
     if (matchesKey(data, 'escape')) {
       if (this.view.editor.isShowingAutocomplete()) return undefined
       if (this.view.editor.getText() !== '') this.view.editor.setText('')

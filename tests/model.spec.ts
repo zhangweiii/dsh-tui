@@ -4,8 +4,8 @@ import { describe, expect, it } from 'vitest'
 import { RpcId, type MuxFrame } from '@deepseek-ai/dsh-host-apiproxy'
 import { SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
 import {
-  applyHistory, applyHostFrame, applyMuxFrame, applySessionEvent, createInitialState,
-  projectionStatus, type TuiViewState,
+  applyHistory, applyHostFrame, applyMuxFrame, applySessionEvent, createInitialState, isCollapsibleRow,
+  isExpandedRow, projectionStatus, toggleFold, type TuiViewState,
 } from '../src/model.ts'
 
 const SID = SessionId('session-tui')
@@ -84,6 +84,65 @@ describe('tui view projection', () => {
       kind: 'context', text: '定时任务已触发', detail: '模型可见的附加上下文',
     })])
     expect(state.lastSeq).toBe(1)
+  })
+
+  it('folds verbose rows by default and unfolds the newest folded one on demand', () => {
+    const context = (seq: number) => event('user/message', seq, {
+      id: `context-${String(seq)}`, role: 'user',
+      source: { kind: 'skill-catalog', name: 'skills', form: 'catalog', entries: [] },
+      content: [{ type: 'text', text: `目录内容 ${String(seq)}` }],
+    })
+    let state = applySessionEvent(createInitialState(), context(0))
+    state = applySessionEvent(state, context(1))
+    state = applySessionEvent(state, event('tool/call', 2, {
+      turn: 1, step: 1, callId: 'call-1', name: 'bash', arguments: '{"command":"pwd"}',
+    }))
+    state = applySessionEvent(state, event('tool/result', 3, {
+      turn: 1,
+      step: 1,
+      message: {
+        id: 'tool-1', role: 'user', source: { kind: 'tool', callId: 'call-1' },
+        content: [{
+          type: 'tool-result', toolCallId: 'call-1',
+          content: [{ type: 'text', text: '/work' }], isError: false,
+        }],
+      },
+    }))
+    expect(state.rows.map(row => row.kind)).toEqual(['context', 'context', 'tool'])
+
+    // Everything starts folded; nothing is explicitly expanded yet.
+    expect(state.expanded).toEqual([])
+    // A completed tool row is foldable but not running, so it folds too.
+    expect(isCollapsibleRow(state.rows[2] as never)).toBe(true)
+    expect(isExpandedRow(state.rows[2] as never, state.expanded)).toBe(false)
+
+    // The newest still-folded row unfolds first (the completed tool), then the newer context.
+    state = toggleFold(state)
+    expect(state.expanded).toEqual(['tool-call-1'])
+    state = toggleFold(state)
+    expect(state.expanded).toEqual(['tool-call-1', 'context-1'])
+    // Pressing again peels the next older one.
+    state = toggleFold(state)
+    expect(state.expanded).toEqual(['tool-call-1', 'context-1', 'context-0'])
+    // No folded rows remain, so the next press folds them all back.
+    state = toggleFold(state)
+    expect(state.expanded).toEqual([])
+    // Folding all back then pressing again unfolds the newest row.
+    state = toggleFold(state)
+    expect(state.expanded).toEqual(['tool-call-1'])
+    // Idempotence: a fresh, empty projection has nothing to toggle and changes nothing.
+    const fresh = { ...createInitialState(), rows: [] }
+    expect(toggleFold(fresh)).toBe(fresh)
+  })
+
+  it('keeps a running tool row unfolded even when folded state is empty', () => {
+    let state = applySessionEvent(createInitialState(), event('tool/call', 0, {
+      turn: 1, step: 1, callId: 'live', name: 'bash', arguments: '{}',
+    }))
+    const running = state.rows[0]
+    expect(isExpandedRow(running as never, state.expanded)).toBe(true)
+    expect(state.expanded).toEqual([])
+    expect(toggleFold(state)).toBe(state)
   })
 
   it('folds a manual command and compaction lifecycle into one rich row', () => {

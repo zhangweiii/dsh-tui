@@ -29,7 +29,7 @@ HTTP 连接只允许 `localhost`、`*.localhost`、`127.0.0.0/8` 和 `[::1]`；�
 
 主输入区由 `@earendil-works/pi-tui` 的 `Editor` 提供完整终端编辑能力：Enter 将消息加入队列，Alt+Enter 对活跃 turn 插话，Shift+Enter 换行，Escape 清空草稿或取消活跃 turn，Backspace/终端 DEL 删除光标前的字符，Up/Down 浏览输入历史，Ctrl+C 退出。输入单个 slash token 时，内置 autocomplete 会主动显示匹配命令；Up/Down 选择，Tab 完成。会话、模型、preset、subagent、setting namespace、provider/model 和目录浏览使用 `SelectList`，支持 Up/Down 选择和 Enter 确认。approval 提示中按 `y` 仅允许本次、按 `n` 拒绝。结构化问题使用独立编辑器，因此不会丢失原消息草稿；答案可以是选项编号、逗号分隔的多选编号或自由文本，Escape 会取消整个 question request。
 
-应用使用 `TuiAltScreen`、`VStack` 和 `ScrollView` 构造固定高度布局。备用屏幕、同步差分刷新、鼠标与触控板滚动、滚动条、选区复制和终端模式恢复全部由 pi-tui 管理；本包不实现终端重绘或滚动偏移算法。鼠标滚轮和 PageUp/PageDown 滚动 transcript，Ctrl+Shift+F 搜索，Ctrl+Shift+Up/Down 在用户消息之间跳转，Ctrl+Shift+Home/End 到达开头或末尾。用户离开底部阅读历史时，新流式内容不会强制把视口拉回末尾；回到底部后自动恢复跟随。
+应用使用 `TuiAltScreen`、`VStack` 和 `ScrollView` 构造固定高度布局。备用屏幕、同步差分刷新、鼠标与触控板滚动、滚动条、选区复制和终端模式恢复全部由 pi-tui 管理；本包不实现终端重绘或滚动偏移算法。鼠标滚轮和 PageUp/PageDown 滚动 transcript，Ctrl+Shift+F 搜索，Ctrl+Shift+Up/Down 在用户消息之间跳转，Ctrl+Shift+Home/End 到达开头或末尾。用户离开底部阅读历史时，新流式内容不会强制把视口拉回末尾；回到底部后自动恢复跟随。注入的上下文行（skill 目录、插件上下文、工作区指令、会话召回等）、工具输出、压缩摘要和重试说明都默认折叠成一行标题，像 Web 的 disclosure row 一样，避免长启动上下文和冗长工具输出塞满 transcript；运行中的行保持展开，以便实时输出可见。Ctrl+Shift+E 展开最近折叠的行，反复按会依次展开更早的折叠行，全部展开后下一次按键会把它们重新全部折叠。
 
 ## 终端管理命令
 

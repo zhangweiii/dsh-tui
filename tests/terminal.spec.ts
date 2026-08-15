@@ -185,6 +185,37 @@ describe('pi-tui terminal application', () => {
     application.stop()
   })
 
+  it('folds context and tool rows by default, unfolds the newest on Ctrl+Shift+E', async () => {
+    const terminal = new TestTerminal(90, 16)
+    const rows: TuiViewState['rows'] = [
+      { id: 'context-0', seq: 0, kind: 'context', text: 'Skill 目录', detail: '第一段很长的 skill 目录内容'.repeat(4) },
+      { id: 'tool-1', seq: 1, kind: 'tool', text: 'bash', detail: '/work', status: 'completed' },
+      { id: 'user', seq: 2, kind: 'user', text: '请开始' },
+    ]
+    const controller = new TestController({ rows, running: true })
+    const application = new TerminalApplication(controller.asController(), { continueLatest: false }, { terminal })
+    application.start()
+    await settle(terminal)
+
+    // Verbose rows render as one-line collapsed headers; long details stay folded.
+    expect(terminal.viewport()).toContain('▸ 上下文 · Skill 目录')
+    expect(terminal.viewport()).toContain('▸ ✓ 工具 · bash')
+    expect(terminal.viewport()).not.toContain('第一段很长的 skill 目录内容')
+    expect(terminal.viewport()).not.toContain('/work')
+
+    // Unfolding a specific row reveals its detail.
+    controller.publish({ expanded: ['tool-1'] })
+    await settle(terminal)
+    expect(terminal.viewport()).toContain('▾ ✓ 工具 · bash')
+    expect(terminal.viewport()).toContain('/work')
+
+    // The hotkey routes to the controller fold toggle.
+    terminal.send('\u001B[27;6;101~')
+    await settle(terminal)
+    expect(controller.toggleFoldCount).toBe(1)
+    application.stop()
+  })
+
   it('uses ScrollView follow-end and preserves a manual scroll position while content grows', async () => {
     const terminal = new TestTerminal(90, 18)
     const rows: TuiViewState['rows'] = Array.from({ length: 30 }, (_, index) => ({

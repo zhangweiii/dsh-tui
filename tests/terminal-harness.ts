@@ -93,6 +93,7 @@ export class TestController {
   closeOverlayCount = 0
   startCount = 0
   disposeCount = 0
+  toggleFoldCount = 0
   submitResult: (text: string, mode: 'queue' | 'steer') => Promise<boolean> = async () => true
   answerQuestionResult = true
   private readonly listeners = new Set<() => void>()
@@ -130,6 +131,7 @@ export class TestController {
     return this.answerQuestionResult
   }
   async cancelQuestion(): Promise<void> { this.cancelQuestionCount += 1 }
+  toggleFold(): void { this.toggleFoldCount += 1 }
   dispose(): void { this.disposeCount += 1 }
 
   asController(): TuiController {

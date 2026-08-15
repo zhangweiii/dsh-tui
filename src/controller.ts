@@ -19,8 +19,9 @@ import type { ApprovalOutcome } from '@deepseek-ai/dsh-user-approval/types'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import type { TuiStartupValues } from './startup.ts'
 import {
-  applyHistory, applyHostFrame, applyMuxFrame, contentText, createInitialState, type PendingApproval,
-  type PendingQuestion, projectedTitle, projectionStatus, type TuiPicker, type TuiViewState,
+  applyHistory, applyHostFrame, applyMuxFrame, contentText, createInitialState, toggleFold,
+  type PendingApproval, type PendingQuestion, projectedTitle, projectionStatus, type TuiPicker,
+  type TuiViewState,
 } from './model.ts'
 
 type Listener = () => void
@@ -1566,6 +1567,7 @@ export class TuiController {
             '/cordis · /cordis-run|stop|remove',
             '/image · /image-steer · /save-image · /export',
             '/skills · /host · /status',
+            'Ctrl+Shift+E  展开最近的折叠行（上下文/skill 目录、工具详情等）；再按展开更早的，全开后按一下重新全部折叠',
             '/goal <objective> · /plan · /permission · /compact  交给 Harness',
             '/close              关闭当前面板',
             '其他 /command       交给 Harness 命令或 skill',
@@ -1821,6 +1823,16 @@ export class TuiController {
    */
   setNotice(notice: string | undefined): void {
     this.update(state => ({ ...state, notice }))
+  }
+
+  /**
+   * Toggle the newest folded verbose row open (or fold them all back), mirroring
+   * the Web disclosure rows. Repeated presses peel progressively older rows;
+   * once every foldable row is unfolded, the next press folds them all back into
+   * their one-line headers. Running rows stay unfolded.
+   */
+  toggleFold(): void {
+    this.update(state => toggleFold(state))
   }
 
   /** Abort both streams and stop publishing to the unmounted terminal. */

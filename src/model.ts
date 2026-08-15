@@ -112,6 +112,8 @@ export interface TuiViewState {
   modelContextWindow: number | undefined
   running: boolean
   rows: TranscriptRow[]
+  /** Ids of rows whose full detail is currently unfolded; running rows are always unfolded. */
+  expanded: string[]
   partialText: string
   partialReasoning: string
   partialTool: { name: string; arguments: string } | undefined
@@ -160,6 +162,7 @@ export function createInitialState(): TuiViewState {
     modelContextWindow: undefined,
     running: false,
     rows: [],
+    expanded: [],
     partialText: '',
     partialReasoning: '',
     partialTool: undefined,
@@ -281,6 +284,54 @@ function upsertRow(state: TuiViewState, row: TranscriptRow): TuiViewState {
   return index < 0
     ? appendRow(state, row)
     : { ...state, rows: state.rows.toSpliced(index, 1, row) }
+}
+
+/**
+ * Kinds whose rows carry a `detail` and fold into a one-line header. Message
+ * rows and anonymous notices stay open; deliverable rows keep their path list
+ * and `/open` hint visible so produced files are always discoverable.
+ */
+const COLLAPSIBLE_KINDS = new Set<TranscriptRow['kind']>([
+  'context', 'tool', 'workflow', 'command', 'compaction', 'retry',
+])
+
+/** Whether a row participates in the fold/unfold interaction. */
+export function isCollapsibleRow(row: TranscriptRow): boolean {
+  return COLLAPSIBLE_KINDS.has(row.kind)
+}
+
+/**
+ * Whether a row's detail is currently visible. A running row is always unfolded
+ * so live tool/workflow output stays readable; every other foldable row shows
+ * its one-line header until the user explicitly expands it.
+ * @param row - The row to decide for.
+ * @param expanded - Ids explicitly unfolded by the user.
+ */
+export function isExpandedRow(row: TranscriptRow, expanded: readonly string[]): boolean {
+  if (row.status === 'running') return true
+  return expanded.includes(row.id)
+}
+
+/**
+ * Unfold the most recent row that is currently folded, or fold them all back.
+ *
+ * Mirrors the Web disclosure rows: verbose rows (skill catalog, injected
+ * context, tool output, compaction, retries…) render collapsed into a one-line
+ * header so they do not crowd the transcript, and are unfolded one at a time on
+ * demand. Each call peels the newest still-folded row, so pressing the key
+ * repeatedly reveals progressively older entries; once every foldable row is
+ * unfolded, the next press folds them all back. Running rows stay unfolded.
+ * @param state - Current terminal projection.
+ * @returns A projection with one more row unfolded (or all folded back), else `state`.
+ */
+export function toggleFold(state: TuiViewState): TuiViewState {
+  for (let index = state.rows.length - 1; index >= 0; index -= 1) {
+    const row = state.rows[index]
+    if (row === undefined || !isCollapsibleRow(row)) continue
+    if (row.status === 'running' || state.expanded.includes(row.id)) continue
+    return { ...state, expanded: [...state.expanded, row.id] }
+  }
+  return state.expanded.length === 0 ? state : { ...state, expanded: [] }
 }
 
 function object(value: unknown): Record<string, unknown> | undefined {
