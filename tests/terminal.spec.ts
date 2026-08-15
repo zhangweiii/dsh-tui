@@ -407,7 +407,15 @@ describe('pi-tui terminal application', () => {
       },
     })
     await settle(terminal)
-    terminal.send('2')
+    // The single-select question renders as an arrow-navigable menu: Down moves
+    // the highlight to B, Enter confirms it.
+    terminal.send('\u001B[B')
+    terminal.send('\r')
+    await settle(terminal)
+    // Confirming the option moves to the review summary; the "确认提交" row is the
+    // last of two rows, so Down selects it and Enter sends everything.
+    expect(terminal.viewport()).toContain('请确认你的回答')
+    terminal.send('\u001B[B')
     terminal.send('\r')
     await settle(terminal)
     expect(controller.questionAnswers).toEqual([{ answers: [{ id: 'choice', selected: ['B'] }] }])
@@ -428,7 +436,7 @@ describe('pi-tui terminal application', () => {
     application.stop()
   })
 
-  it('re-enables the question editor after a rejected answer so the user can retry', async () => {
+  it('returns to the confirmation summary after a rejected submission so the user can revise', async () => {
     const terminal = new TestTerminal(100, 16)
     const controller = new TestController()
     controller.answerQuestionResult = false
@@ -443,20 +451,256 @@ describe('pi-tui terminal application', () => {
       },
     })
     await settle(terminal)
-    terminal.send('1')
+    // The first option ('快') is highlighted by default, so Enter selects it and
+    // the batch moves to the confirmation summary.
     terminal.send('\r')
     await settle(terminal)
-    expect(controller.questionAnswers).toEqual([{ answers: [{ id: 'mode', selected: ['快'] }] }])
+    expect(terminal.viewport()).toContain('请确认你的回答')
 
-    // The rejected submission must not leave the composer stuck on a pending
-    // state: the question prompt returns and the editor accepts a retry.
+    // Confirm is rejected: the summary must return (not a stuck pending state)
+    // so the user can revise their answer.
+    terminal.send('\u001B[B')
+    terminal.send('\r')
     await settle(terminal)
-    expect(terminal.viewport()).toContain('选择模式？')
-    terminal.send('2')
+    expect(controller.questionAnswers).toHaveLength(1)
+    expect(terminal.viewport()).toContain('请确认你的回答')
+
+    // After a rejection the confirm row stays highlighted so retry is one Enter
+    // away; move Up to the question row and choose it to revise the answer.
+    terminal.send('\u001B[A')
+    terminal.send('\r')
+    await settle(terminal)
+    expect(terminal.viewport()).toContain('↑/↓ 选择')
+    expect(terminal.viewport()).not.toContain('请确认你的回答')
+    terminal.send('\u001B[B')
+    terminal.send('\r')
+    await settle(terminal)
+    expect(terminal.viewport()).toContain('请确认你的回答')
+
+    // Confirming now succeeds and sends the revised answer.
+    controller.answerQuestionResult = true
+    terminal.send('\u001B[B')
     terminal.send('\r')
     await settle(terminal)
     expect(controller.questionAnswers).toHaveLength(2)
     expect(controller.questionAnswers[1]).toEqual({ answers: [{ id: 'mode', selected: ['稳'] }] })
+    application.stop()
+  })
+
+  it('lets a single-select question be answered by typing a custom answer, not just an option', async () => {
+    const terminal = new TestTerminal(100, 16)
+    const controller = new TestController()
+    const application = new TerminalApplication(controller.asController(), { continueLatest: false }, { terminal })
+    application.start()
+    await settle(terminal)
+
+    controller.publish({
+      interaction: {
+        kind: 'question', rpcId: 'rpc-question' as never, sessionId: 'session' as never,
+        questions: [{ id: 'mode', question: '选择模式？', options: [{ label: '快' }, { label: '稳' }] }],
+      },
+    })
+    await settle(terminal)
+    // The menu renders with its hint line and the trailing "other/custom" entry.
+    // Options appear once, in the arrow-navigable list, without a separate
+    // numbered header listing above it.
+    expect(terminal.viewport()).toContain('其他 / 自定义')
+    expect(terminal.viewport()).toContain('↑/↓ 选择')
+    expect(terminal.viewport()).toContain('快')
+    expect(terminal.viewport()).toContain('稳')
+    expect(terminal.viewport()).not.toContain('1. 快')
+    expect(terminal.viewport()).not.toContain('2. 稳')
+
+    // Typing a printable character drops into the custom editor; Enter submits
+    // that text verbatim as the free-text answer, then the confirmation summary
+    // appears with the custom text shown.
+    terminal.send('o')
+    terminal.send('t')
+    terminal.send('h')
+    terminal.send('e')
+    terminal.send('r')
+    terminal.send('\r')
+    await settle(terminal)
+    expect(terminal.viewport()).toContain('请确认你的回答')
+    expect(terminal.viewport()).toContain('other')
+    terminal.send('\u001B[B')
+    terminal.send('\r')
+    await settle(terminal)
+    expect(controller.questionAnswers).toEqual([{ answers: [{ id: 'mode', selected: [], custom: 'other' }] }])
+    application.stop()
+  })
+
+  it('enters the custom editor through the trailing entry and returns to the menu with Escape', async () => {
+    const terminal = new TestTerminal(100, 16)
+    const controller = new TestController()
+    const application = new TerminalApplication(controller.asController(), { continueLatest: false }, { terminal })
+    application.start()
+    await settle(terminal)
+
+    controller.publish({
+      interaction: {
+        kind: 'question', rpcId: 'rpc-question' as never, sessionId: 'session' as never,
+        questions: [{ id: 'mode', question: '选择模式？', options: [{ label: '快' }, { label: '稳' }] }],
+      },
+    })
+    await settle(terminal)
+    // Walk down to the last (自定义) entry and confirm it.
+    terminal.send('\u001B[B')
+    terminal.send('\u001B[B')
+    terminal.send('\r')
+    await settle(terminal)
+    expect(terminal.viewport()).toContain('输入自定义回答')
+
+    // Escape returns to the option menu without cancelling the whole request.
+    terminal.send('\u001B')
+    await settle(terminal)
+    expect(controller.cancelQuestionCount).toBe(0)
+    expect(terminal.viewport()).toContain('↑/↓ 选择')
+
+    // The trailing entry stays highlighted, so Enter returns to the custom editor.
+    terminal.send('\r')
+    await settle(terminal)
+    terminal.send('别的')
+    terminal.send('\r')
+    await settle(terminal)
+    // The confirmation summary reflects the custom answer before anything is sent.
+    expect(terminal.viewport()).toContain('请确认你的回答')
+    expect(terminal.viewport()).toContain('别的')
+    terminal.send('\u001B[B')
+    terminal.send('\r')
+    await settle(terminal)
+    expect(controller.questionAnswers).toEqual([{ answers: [{ id: 'mode', selected: [], custom: '别的' }] }])
+    application.stop()
+  })
+
+  it('cancels the whole question request with Escape in the option menu', async () => {
+    const terminal = new TestTerminal(100, 16)
+    const controller = new TestController()
+    const application = new TerminalApplication(controller.asController(), { continueLatest: false }, { terminal })
+    application.start()
+    await settle(terminal)
+
+    controller.publish({
+      interaction: {
+        kind: 'question', rpcId: 'rpc-question' as never, sessionId: 'session' as never,
+        questions: [{ id: 'mode', question: '选择模式？', options: [{ label: '快' }, { label: '稳' }] }],
+      },
+    })
+    await settle(terminal)
+    terminal.send('\u001B')
+    await settle(terminal)
+    expect(controller.cancelQuestionCount).toBe(1)
+    application.stop()
+  })
+
+  it('still answers option-less and multi-select questions through the number/custom editor', async () => {
+    const terminal = new TestTerminal(100, 16)
+    const controller = new TestController()
+    const application = new TerminalApplication(controller.asController(), { continueLatest: false }, { terminal })
+    application.start()
+    await settle(terminal)
+
+    controller.publish({
+      interaction: {
+        kind: 'question', rpcId: 'rpc-question' as never, sessionId: 'session' as never,
+        questions: [
+          { id: 'free', question: '一句话？' },
+          { id: 'multi', question: '多选几个？', multiSelect: true, options: [{ label: '一' }, { label: '二' }] },
+        ],
+      },
+    })
+    await settle(terminal)
+    // The first question has no options, so no arrow menu appears for it; the
+    // editor path keeps its numbered option listing only on the multi-select step.
+    expect(terminal.viewport()).toContain('问题 1/2 · 一句话？')
+    terminal.send('随便')
+    terminal.send('\r')
+    await settle(terminal)
+    // The multi-select step keeps the numbered option listing and the
+    // comma-separated hint, since the user types numbers there.
+    expect(terminal.viewport()).toContain('问题 2/2 · 多选几个？')
+    expect(terminal.viewport()).toContain('1. 一')
+    expect(terminal.viewport()).toContain('2. 二')
+    expect(terminal.viewport()).toContain('多个编号用逗号分隔')
+    terminal.send('1,2')
+    terminal.send('\r')
+    await settle(terminal)
+    // Both answers typed; the confirmation summary lists every "question → answer"
+    // before the batch is sent. The confirm row is the last of three.
+    expect(terminal.viewport()).toContain('请确认你的回答')
+    expect(terminal.viewport()).toContain('随便')
+    expect(terminal.viewport()).toContain('一、二')
+    terminal.send('\u001B[B')
+    terminal.send('\u001B[B')
+    terminal.send('\r')
+    await settle(terminal)
+    expect(controller.questionAnswers).toEqual([{
+      answers: [
+        { id: 'free', selected: [], custom: '随便' },
+        { id: 'multi', selected: ['一', '二'] },
+      ],
+    }])
+    application.stop()
+  })
+
+  it('shows a "question → answer" summary and lets the first entry be revised before sending', async () => {
+    const terminal = new TestTerminal(100, 18)
+    const controller = new TestController()
+    const application = new TerminalApplication(controller.asController(), { continueLatest: false }, { terminal })
+    application.start()
+    await settle(terminal)
+
+    controller.publish({
+      interaction: {
+        kind: 'question', rpcId: 'rpc-question' as never, sessionId: 'session' as never,
+        questions: [
+          { id: 'pick', question: '选哪个？', options: [{ label: '甲' }, { label: '乙' }] },
+          { id: 'note', question: '备注一句？' },
+        ],
+      },
+    })
+    await settle(terminal)
+    // Answer Q1 (option menu → Down to 乙, Enter) and Q2 (type text, Enter).
+    terminal.send('\u001B[B')
+    terminal.send('\r')
+    await settle(terminal)
+    terminal.send('备注内容')
+    terminal.send('\r')
+    await settle(terminal)
+    // The summary shows both "question → answer" lines and the confirm row.
+    expect(terminal.viewport()).toContain('请确认你的回答')
+    expect(terminal.viewport()).toContain('问题 1 · 选哪个？')
+    expect(terminal.viewport()).toContain('问题 2 · 备注一句？')
+    expect(terminal.viewport()).toContain('乙')
+    expect(terminal.viewport()).toContain('备注内容')
+    expect(terminal.viewport()).toContain('确认提交全部回答')
+
+    // The first entry is highlighted by default; Enter reopens Q1 to revise it.
+    terminal.send('\r')
+    await settle(terminal)
+    expect(terminal.viewport()).toContain('↑/↓ 选择')
+    // Switch from 乙 back to 甲 (default), then answer Q2 again.
+    terminal.send('\u001B[A')
+    terminal.send('\r')
+    await settle(terminal)
+    terminal.send('改后的备注')
+    terminal.send('\r')
+    await settle(terminal)
+    expect(terminal.viewport()).toContain('请确认你的回答')
+    expect(terminal.viewport()).toContain('甲')
+    expect(terminal.viewport()).toContain('改后的备注')
+
+    // Confirm the revised batch.
+    terminal.send('\u001B[B')
+    terminal.send('\u001B[B')
+    terminal.send('\r')
+    await settle(terminal)
+    expect(controller.questionAnswers).toEqual([{
+      answers: [
+        { id: 'pick', selected: ['甲'] },
+        { id: 'note', selected: [], custom: '改后的备注' },
+      ],
+    }])
     application.stop()
   })
 

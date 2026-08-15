@@ -1,8 +1,8 @@
 /** pi-tui component tree for the fixed viewport application. */
 
-import type { AskUserQuestionItem } from '@deepseek-ai/dsh-user-questions/types'
+import type { AskUserQuestionAnswerItem, AskUserQuestionItem } from '@deepseek-ai/dsh-user-questions/types'
 import {
-  Editor, Markdown, ScrollView, SelectList, stripTerminalSequences, Text, truncateToWidth, visibleWidth, VStack,
+  Editor, Markdown, matchesKey, ScrollView, SelectList, stripTerminalSequences, Text, truncateToWidth, visibleWidth, VStack,
   wrapTextWithAnsi, type Component, type Focusable, type SelectItem, type TUI,
 } from '@earendil-works/pi-tui'
 import { contentText, isExpandedRow, projectionStatus, type TranscriptRow, type TuiViewState } from './model.ts'
@@ -344,9 +344,212 @@ class ComposerSlot implements Component, Focusable {
   }
 }
 
+/** Sentinel `SelectItem.value` marking the trailing "custom answer" entry. */
+const CUSTOM_ANSWER_VALUE = '\u0000custom-answer'
+
+/**
+ * A single-select option picker for a structured question. The candidate options
+ * render as an arrow-navigable `SelectList`; Up/Down moves the highlight, Enter
+ * confirms the highlighted option, and typing any printable character switches to a
+ * small editor for a free-text "custom" answer (Enter submits, Escape returns to the
+ * option list). This mirrors how other terminal agents let a user both pick from a
+ * menu and supply an "Other" answer.
+ */
+class QuestionPicker implements Component, Focusable {
+  private list: SelectList
+  private readonly editor: Editor
+  private readonly editorBox: PromptEditor
+  private readonly tui: TUI
+  private mode: 'select' | 'custom' = 'select'
+  private _focused = false
+  private optionsSignature = ''
+
+  constructor(tui: TUI, private readonly actions: QuestionPickerActions) {
+    this.tui = tui
+    this.editor = new Editor(tui, editorTheme, { paddingX: 0 })
+    this.editor.onSubmit = text => {
+      if (this.mode !== 'custom') return
+      this.setMode('select')
+      this.actions.submitCustom(text)
+    }
+    this.editorBox = new PromptEditor(this.editor)
+    this.list = new SelectList([], 8, selectListTheme)
+    this.updateList([], this.actions)
+  }
+
+  /**
+   * Rebuild the option list for a question. Safe to call on every view update;
+   * the underlying list is only replaced when the options actually change so the
+   * retained selection survives unrelated re-renders. Starting a new question also
+   * returns the picker to the option list and clears any custom draft.
+   */
+  update(question: AskUserQuestionItem): void {
+    const options = question.options ?? []
+    const items: SelectItem[] = options.map(option => ({
+      value: option.label,
+      label: option.label,
+      description: option.description,
+    }))
+    items.push({ value: CUSTOM_ANSWER_VALUE, label: `${ansi.bold('✎ 其他 / 自定义…')}` })
+    this.updateList(items, this.actions)
+  }
+
+  private updateList(items: SelectItem[], actions: QuestionPickerActions): void {
+    const signature = items.map(item => `${item.value}\u0001${item.description ?? ''}`).join('\u0002')
+    if (this.optionsSignature === signature) return
+    this.optionsSignature = signature
+    this.mode = 'select'
+    this.editor.setText('')
+    this.list = new SelectList(items, 8, selectListTheme)
+    this.list.onCancel = () => { if (this.mode === 'select') actions.cancel() }
+    this.list.onSelect = item => {
+      if (item.value === CUSTOM_ANSWER_VALUE) this.enterCustom()
+      else actions.chooseOption(item.value)
+    }
+  }
+
+  get focused(): boolean { return this._focused }
+  set focused(value: boolean) {
+    this._focused = value
+    this.editor.focused = value
+  }
+
+  invalidate(): void {
+    this.editor.invalidate()
+    this.list.invalidate()
+  }
+
+  handleInput(data: string): void {
+    if (this.mode === 'custom') {
+      // Escape leaves the custom editor and returns to the option menu.
+      if (matchesKey(data, 'escape') && this.editor.getText() === '') {
+        this.setMode('select')
+        return
+      }
+      this.editor.handleInput(data)
+      return
+    }
+    // Option mode: any printable character (including the start of CJK text)
+    // moves the user into the custom editor so they never have to reach the
+    // trailing menu entry. Control/escape sequences stay with the list.
+    if (data.charCodeAt(0) >= 32) {
+      this.enterCustom(data)
+      return
+    }
+    this.list.handleInput(data)
+  }
+
+  private enterCustom(initial = ''): void {
+    if (this.mode === 'select') {
+      this.editor.setText('')
+      this.mode = 'custom'
+    }
+    if (initial !== '') this.editor.insertTextAtCursor(initial)
+    this.editor.focused = this._focused
+    this.tui.requestRender()
+  }
+
+  private setMode(mode: 'select' | 'custom'): void {
+    if (this.mode === mode) return
+    this.mode = mode
+    if (mode === 'select') this.editor.setText('')
+    this.editor.focused = this.mode === 'custom' && this._focused
+    this.tui.requestRender()
+  }
+
+  render(width: number): string[] {
+    if (this.mode === 'select') {
+      return [...this.list.render(width), ansi.dim('↑/↓ 选择 · Enter 确认 · 输入即 other 自定义 · Esc 取消')]
+    }
+    return [
+      ...this.editorBox.render(width),
+      ansi.dim('输入自定义回答 · Enter 确认 · Esc 返回选项'),
+    ]
+  }
+}
+
+interface QuestionPickerActions {
+  chooseOption(label: string): void
+  submitCustom(text: string): void
+  cancel(): void
+}
+
+/** Sentinel `SelectItem.value` marking the "confirm all" row. */
+const REVIEW_CONFIRM_VALUE = '\u0000review-confirm'
+
+/** Human-readable rendering of one answer item for the confirmation summary. */
+function formatAnswer(item: AskUserQuestionAnswerItem | undefined): string {
+  if (item === undefined) return ansi.dim('（未作答）')
+  if (item.custom !== undefined) return `${ansi.bold(item.custom)}`
+  if (item.selected.length > 0) return `${ansi.bold(item.selected.join('、'))}`
+  return ansi.dim('（未选择）')
+}
+
+/**
+ * The confirmation summary shown after the last question of a batch. Every
+ * answered question is listed as "question → your answer"; the user moves the
+ * highlight with Up/Down and presses Enter on a question row to revisit it, or
+ * on the trailing row to submit the whole batch.
+ */
+class QuestionReview implements Component, Focusable {
+  private list: SelectList
+  private readonly tui: TUI
+  private _focused = false
+  private signature = ''
+
+  constructor(tui: TUI, private readonly actions: QuestionReviewActions) {
+    this.tui = tui
+    this.list = new SelectList([], 8, selectListTheme)
+  }
+
+  update(questions: AskUserQuestionItem[], answers: AskUserQuestionAnswerItem[]): void {
+    const rows: SelectItem[] = questions.map((question, index) => {
+      const title = question.header ?? question.question
+      return {
+        value: String(index),
+        label: `问题 ${String(index + 1)} · ${title}`,
+        description: formatAnswer(answers[index]),
+      }
+    })
+    rows.push({ value: REVIEW_CONFIRM_VALUE, label: `${ansi.bold('✅ 确认提交全部回答')}` })
+    const signature = rows.map(row => `${row.value}\u0001${row.label}\u0001${row.description ?? ''}`).join('\u0002')
+    if (this.signature === signature) return
+    this.signature = signature
+    this.list = new SelectList(rows, 8, selectListTheme)
+    this.list.onCancel = () => { this.actions.cancel() }
+    this.list.onSelect = item => {
+      if (item.value === REVIEW_CONFIRM_VALUE) this.actions.confirm()
+      else this.actions.edit(Number(item.value))
+    }
+  }
+
+  get focused(): boolean { return this._focused }
+  set focused(value: boolean) { this._focused = value }
+
+  invalidate(): void { this.list.invalidate() }
+
+  handleInput(data: string): void {
+    // The review is a plain navigable list; printable characters are ignored.
+    this.list.handleInput(data)
+  }
+
+  render(width: number): string[] { return this.list.render(width) }
+}
+
+interface QuestionReviewActions {
+  edit(index: number): void
+  confirm(): void
+  cancel(): void
+}
+
 export interface TerminalViewActions {
   choosePicker(value: string): void
   closePicker(): void
+  chooseQuestionOption(label: string): void
+  submitQuestionCustom(text: string): void
+  cancelQuestionRequest(): void
+  editQuestion(index: number): void
+  confirmQuestionAnswers(): void
 }
 
 /** Retained pi-tui layout whose components observe immutable controller snapshots. */
@@ -366,6 +569,10 @@ export class TerminalView {
   private readonly composer = new ComposerSlot()
   private readonly editorBox: PromptEditor
   private readonly questionEditorBox: PromptEditor
+  private readonly questionPicker: QuestionPicker
+  private readonly questionReview: QuestionReview
+  private questionReviewing = false
+  private questionAnswers: AskUserQuestionAnswerItem[] = []
   private pickerSignature = ''
   private picker: SelectList | undefined
 
@@ -375,6 +582,16 @@ export class TerminalView {
     this.questionEditor = new Editor(tui, editorTheme, { paddingX: 0 })
     this.editorBox = new PromptEditor(this.editor)
     this.questionEditorBox = new PromptEditor(this.questionEditor)
+    this.questionPicker = new QuestionPicker(tui, {
+      chooseOption: label => this.actions.chooseQuestionOption(label),
+      submitCustom: text => this.actions.submitQuestionCustom(text),
+      cancel: () => this.actions.cancelQuestionRequest(),
+    })
+    this.questionReview = new QuestionReview(tui, {
+      edit: index => this.actions.editQuestion(index),
+      confirm: () => this.actions.confirmQuestionAnswers(),
+      cancel: () => this.actions.cancelQuestionRequest(),
+    })
     this.document = new TranscriptDocument(state)
     this.transcript = new ScrollView(this.document, {
       follow: 'end', primary: true, overscroll: 'contain', scrollbar: 'auto', scrollbarStyle: ansi.gray,
@@ -390,11 +607,19 @@ export class TerminalView {
       { component: this.composer, basis: 'auto', shrink: 1, minSize: 3, maxSize: 18 },
       { component: this.status, basis: 'auto', shrink: 0, minSize: 1, maxSize: 2 },
     ])
-    this.update(state, 0, false)
+    this.update(state, 0, false, false, [])
   }
 
-  update(state: TuiViewState, questionIndex: number, questionSubmitting: boolean): void {
+  update(
+    state: TuiViewState,
+    questionIndex: number,
+    questionReviewing: boolean,
+    questionSubmitting: boolean,
+    questionAnswers: AskUserQuestionAnswerItem[],
+  ): void {
     this.state = state
+    this.questionReviewing = questionReviewing
+    this.questionAnswers = questionAnswers
     this.document.update(state)
     this.notice.update(state)
     this.activity.update(state)
@@ -427,15 +652,38 @@ export class TerminalView {
     if (interaction?.kind === 'question') {
       this.pickerSignature = ''
       this.picker = undefined
+      // After the last question the batch moves to a confirmation summary that
+      // lists every "question → answer"; the user confirms all or revisits any
+      // single entry before the answer is sent to the host.
+      if (this.questionReviewing) {
+        this.questionReview.update(interaction.questions, this.questionAnswers)
+        this.composer.set([
+          new Text(ansi.green(ansi.bold('请确认你的回答')), 1, 0),
+          this.questionReview,
+          new Text(ansi.dim('↑/↓ 查看 · Enter 修改选中项或确认提交 · Esc 取消请求'), 1, 0),
+        ], this.questionReview)
+        return
+      }
       const question = interaction.questions[questionIndex]
-      const prompt = question === undefined
-        ? [new Text(ansi.yellow('正在提交回答…'), 1, 0)]
-        : questionComponents(question, questionIndex, interaction.questions.length)
+      if (question === undefined) {
+        this.composer.set([new Text(ansi.yellow('正在提交回答…'), 1, 0)])
+        return
+      }
+      const prompt = questionComponents(question, questionIndex, interaction.questions.length, false)
+      // Single-select with options becomes an arrow-navigable menu with a typed
+      // custom-answer fallback; multi-select or option-less questions keep the
+      // number/custom-text editor.
+      if (question.multiSelect !== true && (question.options?.length ?? 0) > 0) {
+        this.questionPicker.update(question)
+        this.composer.set([...prompt, this.questionPicker], this.questionPicker)
+        return
+      }
+      const numberedPrompt = questionComponents(question, questionIndex, interaction.questions.length, true)
       this.questionEditor.disableSubmit = questionSubmitting
       this.composer.set([
-        ...prompt,
+        ...numberedPrompt,
         this.questionEditorBox,
-        new Text(ansi.dim(`${question?.multiSelect === true ? '多个编号用逗号分隔，或输入自定义回答 · ' : ''}Enter 确认 · Esc 取消请求`), 1, 0),
+        new Text(ansi.dim(`${question.multiSelect === true ? '多个编号用逗号分隔，或输入自定义回答 · ' : ''}Enter 确认 · Esc 取消请求`), 1, 0),
       ], this.questionEditorBox)
       return
     }
@@ -463,15 +711,20 @@ export class TerminalView {
   }
 }
 
-function questionComponents(question: AskUserQuestionItem, index: number, total: number): Component[] {
+function questionComponents(question: AskUserQuestionItem, index: number, total: number, includeOptions: boolean): Component[] {
   const title = question.header ?? question.question
   const components: Component[] = [
     new Text(ansi.yellow(ansi.bold(`问题 ${String(index + 1)}/${String(total)} · ${title}`)), 1, 0),
   ]
   if (question.header !== undefined) components.push(new Text(question.question, 1, 0))
   if (question.detail !== undefined) components.push(new Text(ansi.dim(limitedLines(question.detail, 6)), 1, 0))
-  for (const [optionIndex, option] of (question.options ?? []).entries()) {
-    components.push(new Text(`${ansi.cyan(`${String(optionIndex + 1)}.`)} ${option.label}${option.description === undefined ? '' : ` — ${option.description}`}`, 1, 0))
+  // The arrow-navigable menu renders the options itself, so only the numbered
+  // listing is emitted for the editor path (option-less and multi-select) where
+  // the user types numbers. Rendering both would duplicate every option.
+  if (includeOptions) {
+    for (const [optionIndex, option] of (question.options ?? []).entries()) {
+      components.push(new Text(`${ansi.cyan(`${String(optionIndex + 1)}.`)} ${option.label}${option.description === undefined ? '' : ` — ${option.description}`}`, 1, 0))
+    }
   }
   return components
 }

@@ -47,6 +47,7 @@ export class TerminalApplication {
   private questionIndex = 0
   private questionAnswers: AskUserQuestionAnswerItem[] = []
   private questionSubmitting = false
+  private questionReviewing = false
   private currentInteractionKey = ''
 
   constructor(
@@ -66,6 +67,11 @@ export class TerminalApplication {
     this.view = new TerminalView(this.tui, this.state, {
       choosePicker: (value) => { void this.controller.choosePicker(value) },
       closePicker: () => { this.controller.closePicker() },
+      chooseQuestionOption: (label) => { this.submitQuestionChoice(label) },
+      submitQuestionCustom: (text) => { void this.submitQuestionCustom(text) },
+      cancelQuestionRequest: () => { void this.controller.cancelQuestion() },
+      editQuestion: (index) => { this.editQuestion(index) },
+      confirmQuestionAnswers: () => { void this.confirmQuestionAnswers() },
     })
     this.view.editor.setAutocompleteProvider(new CombinedAutocompleteProvider(slashCommands(), config.cwd ?? process.cwd()))
     this.view.editor.onSubmit = text => { void this.submit(text, 'queue') }
@@ -104,10 +110,11 @@ export class TerminalApplication {
       this.questionIndex = 0
       this.questionAnswers = []
       this.questionSubmitting = false
+      this.questionReviewing = false
       this.view.questionEditor.setText('')
     }
     this.state = next
-    this.view.update(next, this.questionIndex, this.questionSubmitting)
+    this.view.update(next, this.questionIndex, this.questionReviewing, this.questionSubmitting, this.questionAnswers)
     this.tui.setFocus(this.view.focusTarget)
     this.tui.requestRender()
   }
@@ -128,8 +135,17 @@ export class TerminalApplication {
     if (this.state.picker !== undefined) return undefined
     if (interaction?.kind === 'question') {
       if (matchesKey(data, 'escape')) {
-        void this.controller.cancelQuestion()
-        return { consume: true }
+        // In the confirmation summary and in single-select menu questions the
+        // focused component owns Escape (return to the menu, or cancel the whole
+        // request). Option-less and multi-select questions keep the editor, so
+        // Escape abandons the whole request right here.
+        if (this.questionReviewing) return undefined
+        const current = interaction.questions[this.questionIndex]
+        if (current === undefined || current.multiSelect === true || (current.options?.length ?? 0) === 0) {
+          void this.controller.cancelQuestion()
+          return { consume: true }
+        }
+        return undefined
       }
       return undefined
     }
@@ -184,19 +200,82 @@ export class TerminalApplication {
     if (interaction?.kind !== 'question' || this.questionSubmitting) return
     const question = interaction.questions[this.questionIndex]
     if (question === undefined) return
-    const answers = [...this.questionAnswers, optionAnswer(question, text)]
+    await this.advanceQuestion(optionAnswer(question, text), true)
+  }
+
+  /** Submit one menu option as the current question's answer. */
+  private async submitQuestionChoice(label: string): Promise<void> {
+    const interaction = this.state.interaction
+    if (interaction?.kind !== 'question' || this.questionSubmitting) return
+    const question = interaction.questions[this.questionIndex]
+    if (question === undefined) return
+    await this.advanceQuestion({ id: question.id, selected: [label] }, false)
+  }
+
+  /** Submit free-form text from the picker's custom-answer editor, verbatim. */
+  private async submitQuestionCustom(text: string): Promise<void> {
+    const interaction = this.state.interaction
+    if (interaction?.kind !== 'question' || this.questionSubmitting) return
+    const question = interaction.questions[this.questionIndex]
+    if (question === undefined) return
+    const normalized = text.trim()
+    await this.advanceQuestion(
+      normalized === '' ? { id: question.id, selected: [] } : { id: question.id, selected: [], custom: normalized },
+      false,
+    )
+  }
+
+  /**
+   * Accumulate an answer for the current question, advancing to the next one when
+   * a batch has several, or answering the whole request on the final question.
+   * `clearEditorAfter` controls whether the retained editor draft is cleared so
+   * text-driven questions start each step fresh.
+   */
+  private async advanceQuestion(answerItem: AskUserQuestionAnswerItem, clearEditorAfter: boolean): Promise<void> {
+    const interaction = this.state.interaction
+    if (interaction?.kind !== 'question') return
+    const question = interaction.questions[this.questionIndex]
+    if (question === undefined) return
+    const answers = [...this.questionAnswers, answerItem]
+    this.questionAnswers = answers
     if (this.questionIndex + 1 < interaction.questions.length) {
-      this.questionAnswers = answers
       this.questionIndex += 1
-      this.view.questionEditor.setText('')
-      this.view.update(this.state, this.questionIndex, false)
+      if (clearEditorAfter) this.view.questionEditor.setText('')
+      this.view.update(this.state, this.questionIndex, false, false, this.questionAnswers)
       this.tui.requestRender()
       return
     }
-    this.questionSubmitting = true
-    this.view.update(this.state, this.questionIndex, true)
+    // Every question is answered: move to the confirmation summary instead of
+    // sending immediately, so the user can review "question → answer" and revise
+    // any entry before it is committed to the host.
+    this.questionReviewing = true
+    this.questionSubmitting = false
+    this.view.update(this.state, this.questionIndex, true, false, this.questionAnswers)
     this.tui.requestRender()
-    const accepted = await this.controller.answerQuestion({ answers })
+  }
+
+  /** Reopen one answered question so its answer can be changed. */
+  private editQuestion(index: number): void {
+    const interaction = this.state.interaction
+    if (interaction?.kind !== 'question' || this.questionSubmitting) return
+    if (index < 0 || index >= interaction.questions.length) return
+    this.questionIndex = index
+    this.questionAnswers = this.questionAnswers.slice(0, index)
+    this.questionReviewing = false
+    this.view.questionEditor.setText('')
+    this.view.update(this.state, this.questionIndex, false, false, this.questionAnswers)
+    this.tui.requestRender()
+  }
+
+  /** Send the confirmed set of answers to the host. */
+  private async confirmQuestionAnswers(): Promise<void> {
+    const interaction = this.state.interaction
+    if (interaction?.kind !== 'question' || this.questionSubmitting) return
+    this.questionReviewing = false
+    this.questionSubmitting = true
+    this.view.update(this.state, this.questionIndex, false, true, this.questionAnswers)
+    this.tui.requestRender()
+    const accepted = await this.controller.answerQuestion({ answers: this.questionAnswers })
     if (this.stopped) return
     if (accepted) {
       // Wait for the host `question/resolved` frame; update() clears the
@@ -204,12 +283,11 @@ export class TerminalApplication {
       return
     }
     // The answer was rejected or the transport failed without resolving the
-    // interaction. Re-enable the editor and clear its text so the user can
-    // retry in place instead of being stuck on a pending submission (see
-    // controller.answerQuestion).
+    // interaction. Return to the confirmation summary so the user can retry or
+    // revise an entry instead of being stuck on a pending submission.
     this.questionSubmitting = false
-    this.view.questionEditor.setText('')
-    this.view.update(this.state, this.questionIndex, false)
+    this.questionReviewing = true
+    this.view.update(this.state, this.questionIndex, true, false, this.questionAnswers)
     this.tui.requestRender()
   }
 }
