@@ -1568,6 +1568,7 @@ export class TuiController {
             '/image · /image-steer · /save-image · /export',
             '/skills · /host · /status',
             'Ctrl+Shift+E  展开最近的折叠行（上下文/skill 目录、工具详情等）；再按展开更早的，全开后按一下重新全部折叠',
+            'Ctrl+T        展开/折叠 todo 清单（非折叠时显示进度和当前正在执行的项）',
             '/goal <objective> · /plan · /permission · /compact  交给 Harness',
             '/close              关闭当前面板',
             '其他 /command       交给 Harness 命令或 skill',

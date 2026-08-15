@@ -34,9 +34,48 @@ describe('pi-tui terminal application', () => {
     controller.publish({ todos: [{ content: '只在需要时展示', status: 'in_progress' }] as never })
     await settle(terminal)
     lines = terminal.viewportLines()
-    expect(terminal.viewport()).toContain('待办 1/1 · ◆ 只在需要时展示')
-    expect(lines.findIndex(line => line.includes('待办 1/1')))
+    expect(terminal.viewport()).toContain('待办 已办 0/1 · ◆ 只在需要时展示')
+    expect(lines.findIndex(line => line.includes('待办 已办 0/1')))
       .toBeGreaterThan(lines.findIndex(line => line.includes('Enter 发送')))
+    application.stop()
+  })
+
+  it('collapses todos to progress + running item, expands them on Ctrl+T', async () => {
+    const terminal = new TestTerminal(100, 18)
+    const controller = new TestController({
+      todos: [
+        { content: '已完成步骤一', status: 'completed' },
+        { content: '已完成步骤二', status: 'completed' },
+        { content: '正在执行的步骤三', status: 'in_progress' },
+        { content: '未开始步骤四', status: 'pending' },
+      ] as never,
+    })
+    const application = new TerminalApplication(controller.asController(), { continueLatest: false }, { terminal })
+    application.start()
+    await settle(terminal)
+
+    // Collapsed default: progress count (completed/total) plus the running item.
+    expect(terminal.viewport()).toContain('待办 已办 2/4')
+    expect(terminal.viewport()).toContain('正在执行的步骤三')
+    // Completed and pending entries stay hidden while collapsed.
+    expect(terminal.viewport()).not.toContain('已完成步骤一')
+    expect(terminal.viewport()).not.toContain('未开始步骤四')
+
+    // Ctrl+T expands to show every todo in order, marking done items and
+    // highlighting the one running now.
+    terminal.send('\u0014')
+    await settle(terminal)
+    expect(terminal.viewport()).toContain('待办 已办 2/4')
+    expect(terminal.viewport()).toContain('✓ 已完成步骤一')
+    expect(terminal.viewport()).toContain('✓ 已完成步骤二')
+    expect(terminal.viewport()).toContain('◆ 正在执行的步骤三')
+    expect(terminal.viewport()).toContain('· 未开始步骤四')
+
+    // Ctrl+T again collapses back to the summary.
+    terminal.send('\u0014')
+    await settle(terminal)
+    expect(terminal.viewport()).toContain('待办 已办 2/4')
+    expect(terminal.viewport()).not.toContain('未开始步骤四')
     application.stop()
   })
 
@@ -118,7 +157,7 @@ describe('pi-tui terminal application', () => {
     expect(viewport).toContain('验证结果：')
     expect(viewport).toContain('第一项')
     expect(viewport).toContain('第 8 次流式更新')
-    expect(viewport).toContain('待办 1/1')
+    expect(viewport).toContain('待办 已办 0/1')
     expect(viewport).toContain('> ')
     expect(application.tui.fullRedraws).toBeLessThanOrEqual(2)
     application.stop()

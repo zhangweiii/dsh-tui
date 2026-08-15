@@ -358,6 +358,7 @@ export class TerminalView {
   readonly focusTarget: Component
 
   private state: TuiViewState
+  private activityExpanded = false
   private readonly document: TranscriptDocument
   private readonly notice: StateLine
   private readonly activity: StateLine
@@ -379,13 +380,13 @@ export class TerminalView {
       follow: 'end', primary: true, overscroll: 'contain', scrollbar: 'auto', scrollbarStyle: ansi.gray,
     })
     this.notice = new StateLine(state, renderNotice)
-    this.activity = new StateLine(state, renderActivity)
+    this.activity = new StateLine(state, (next, _width) => renderActivity(next, this.activityExpanded))
     this.status = new StateLine(state, renderStatus)
     this.focusTarget = this.composer
     this.layout = new VStack([
       { component: this.transcript, basis: 0, grow: 1, shrink: 1, minSize: 2 },
       { component: this.notice, basis: 'auto', shrink: 0, maxSize: 1 },
-      { component: this.activity, basis: 'auto', shrink: 1, maxSize: 3 },
+      { component: this.activity, basis: 'auto', shrink: 1, maxSize: 12 },
       { component: this.composer, basis: 'auto', shrink: 1, minSize: 3, maxSize: 18 },
       { component: this.status, basis: 'auto', shrink: 0, minSize: 1, maxSize: 2 },
     ])
@@ -403,6 +404,12 @@ export class TerminalView {
 
   invalidate(): void {
     this.layout.invalidate()
+  }
+
+  /** Toggle whether the activity bar lists every todo or collapses to a summary. */
+  toggleActivityBar(): void {
+    this.activityExpanded = !this.activityExpanded
+    this.activity.invalidate()
   }
 
   private updateComposer(questionIndex: number, questionSubmitting: boolean): void {
@@ -474,14 +481,38 @@ function renderNotice(state: TuiViewState): string[] {
   return [state.phase === 'error' ? ansi.red(`◆ ${oneLine(state.notice)}`) : ansi.yellow(`◆ ${oneLine(state.notice)}`)]
 }
 
-function renderActivity(state: TuiViewState): string[] {
+function renderActivity(state: TuiViewState, expanded: boolean): string[] {
   const goal = projectedGoal(state)
+  const total = state.todos.length
   const remaining = state.todos.filter(todo => todo.status !== 'completed')
-  const todoSummary = remaining.slice(0, 3).map(todo => `${todo.status === 'in_progress' ? '◆' : '·'} ${oneLine(todo.content)}`).join(' · ')
+  const completed = total - remaining.length
+  const inProgress = remaining.find(todo => todo.status === 'in_progress')
   const queueSummary = state.queueItems.slice(0, 2).map(item => oneLine(contentText(item.message.content))).join(' · ')
   const lines: string[] = []
   if (remaining.length > 0) {
-    lines.push(`${ansi.bold(`待办 ${String(remaining.length)}/${String(state.todos.length)}`)} · ${todoSummary}`)
+    // Upper padding so the todo block is not glued to the transcript above.
+    lines.push('')
+    if (expanded) {
+      // Expanded: show every todo in order, highlighting the one running now.
+      lines.push(`${ansi.bold(`待办 已办 ${String(completed)}/${String(total)}`)}`)
+      for (const todo of state.todos) {
+        if (todo.status === 'in_progress') {
+          lines.push(`${ansi.cyan(ansi.bold('◆'))} ${ansi.bold(oneLine(todo.content))}`)
+        } else if (todo.status === 'completed') {
+          lines.push(`${ansi.green('✓')} ${ansi.dim(oneLine(todo.content))}`)
+        } else {
+          lines.push(`· ${oneLine(todo.content)}`)
+        }
+      }
+      // Lower padding, symmetric with the upper one, before the composer border.
+      lines.push('')
+    } else {
+      // Collapsed: progress count plus the currently executing todo, if any.
+      const summary = inProgress === undefined
+        ? remaining.slice(0, 3).map(todo => `· ${oneLine(todo.content)}`).join(' · ')
+        : `${ansi.cyan(ansi.bold('◆'))} ${ansi.bold(oneLine(inProgress.content))}`
+      lines.push(`${ansi.bold(`待办 已办 ${String(completed)}/${String(total)}`)}${summary === '' ? '' : ` · ${summary}`}`)
+    }
   }
   if (goal !== undefined) lines.push(`${ansi.bold(`目标 · ${goal.phase}`)} · ${ansi.cyan(oneLine(goal.objective))}`)
   const activity = [
@@ -490,7 +521,7 @@ function renderActivity(state: TuiViewState): string[] {
     state.workflows.length > 0 ? `工作流 ${String(state.workflows.length)} · ${state.workflows.slice(-2).map(workflow => `${workflow.status === 'running' ? '◆' : workflow.status === 'completed' ? '✓' : '◇'} ${oneLine(workflow.name)}`).join(' · ')}` : undefined,
   ].filter(value => value !== undefined).join(' │ ')
   if (activity !== '') lines.push(ansi.dim(activity))
-  return lines.slice(0, 3)
+  return lines.slice(0, Math.max(3, expanded ? 12 : 3))
 }
 
 function renderStatus(state: TuiViewState, width: number): string[] {
