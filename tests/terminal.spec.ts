@@ -116,6 +116,33 @@ describe('pi-tui terminal application', () => {
     application.stop()
   })
 
+  it('fades a settled job out of the dock while keeping live and failed ones', async () => {
+    const terminal = new TestTerminal(100, 20)
+    const controller = new TestController({
+      todos: [{ content: '进行中的步骤', status: 'in_progress' }] as never,
+      jobs: [
+        { id: 'bash-1', kind: 'bash', label: 'pytest -q', status: 'running', startedAt: 0 },
+        { id: 'bash-2', kind: 'bash', label: 'build', status: 'completed', detail: 'exit code 0', startedAt: 0, finishedAt: 2 },
+      ] as never,
+    })
+    const application = new TerminalApplication(controller.asController(), { continueLatest: false }, { terminal })
+    application.start()
+    await settle(terminal)
+
+    // Collapsed shows only the running job; the settled one is not listed.
+    expect(terminal.viewport()).toContain('任务 1')
+    expect(terminal.viewport()).toContain('pytest -q')
+    expect(terminal.viewport()).not.toContain('build')
+
+    // Expanded still surfaces only live jobs (not the completed build).
+    terminal.send('\u0014')
+    await settle(terminal)
+    const viewport = terminal.viewport()
+    expect(viewport).toContain('● bash · pytest -q')
+    expect(viewport).not.toContain('build')
+    application.stop()
+  })
+
   it('splits the footer into two width-balanced lines when space is tight', async () => {
     const terminal = new TestTerminal(48, 14)
     const controller = new TestController({

@@ -491,6 +491,11 @@ function jobMarker(job: { status: string }): string {
   }
 }
 
+/** A job still worth surfacing: still live or newly failed, not one that finished. */
+function isLiveJob(job: { status: string }): boolean {
+  return job.status === 'running' || job.status === 'stopping' || job.status === 'failed'
+}
+
 function jobColor(job: { status: string }): (text: string) => string {
   if (job.status === 'failed') return ansi.red
   if (job.status === 'running') return ansi.cyan
@@ -515,6 +520,9 @@ function renderActivity(state: TuiViewState, expanded: boolean): string[] {
   const completed = total - remaining.length
   const inProgress = remaining.find(todo => todo.status === 'in_progress')
   const queueSummary = state.queueItems.slice(0, 2).map(item => oneLine(contentText(item.message.content))).join(' · ')
+  // A settled job no longer occupies the dock; only live or failed ones stay
+  // visible, mirroring how a finished todo falls out of the progress count.
+  const liveJobs = state.jobs.filter(isLiveJob)
   const jobRenderer = (job: { status: string; kind: string; label: string; detail?: string }): string => {
     const detail = job.detail === undefined ? '' : `（${oneLine(job.detail)}）`
     return `${jobColor(job)(`${jobMarker(job)}`)} ${oneLine(job.kind)} · ${oneLine(job.label)}${detail}`
@@ -536,10 +544,10 @@ function renderActivity(state: TuiViewState, expanded: boolean): string[] {
         }
       }
     }
-    if (state.jobs.length > 0) {
+    if (liveJobs.length > 0) {
       if (lines.length > 0) lines.push('')
-      lines.push(`${ansi.bold(`任务 ${String(state.jobs.length)}`)}`)
-      for (const job of state.jobs) lines.push(` ${jobRenderer(job)}`)
+      lines.push(`${ansi.bold(`任务 ${String(liveJobs.length)}`)}`)
+      for (const job of liveJobs) lines.push(` ${jobRenderer(job)}`)
     }
     if (state.workflows.length > 0) {
       if (lines.length > 0) lines.push('')
@@ -566,7 +574,7 @@ function renderActivity(state: TuiViewState, expanded: boolean): string[] {
       : `${ansi.cyan(ansi.bold('◆'))} ${ansi.bold(oneLine(inProgress.content))}`
     const segments = [
       remaining.length > 0 ? `${ansi.bold(`待办 已办 ${String(completed)}/${String(total)}`)}${todoSummary === '' ? '' : ` · ${todoSummary}`}` : undefined,
-      state.jobs.length > 0 ? `${ansi.bold(`任务 ${String(state.jobs.length)}`)} · ${state.jobs.slice(0, 2).map(jobRenderer).join(' · ')}` : undefined,
+      liveJobs.length > 0 ? `${ansi.bold(`任务 ${String(liveJobs.length)}`)} · ${liveJobs.slice(0, 2).map(jobRenderer).join(' · ')}` : undefined,
       state.workflows.length > 0 ? `${ansi.bold(`工作流 ${String(state.workflows.length)}`)}` : undefined,
     ].filter(value => value !== undefined).join(' │ ')
     // Pull the todo, job, and workflow summaries into one strip, padded above
@@ -606,7 +614,7 @@ function renderStatus(state: TuiViewState, width: number): string[] {
     context,
     contextWindow === undefined ? undefined : formatCount(contextWindow),
     state.queueSize > 0 ? `队列 ${String(state.queueSize)}` : undefined,
-    state.jobs.length > 0 ? `任务 ${String(state.jobs.length)}` : undefined,
+    state.jobs.some(isLiveJob) ? `任务 ${String(state.jobs.filter(isLiveJob).length)}` : undefined,
     status.permission === undefined ? undefined : ansi.cyan(shorten(status.permission, 18)),
     plan,
   ].filter(value => value !== undefined), width)
