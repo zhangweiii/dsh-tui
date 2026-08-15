@@ -235,7 +235,7 @@ class TranscriptDocument implements Component {
     return new VStack([
       new Text(`\n${ansi.magenta(ansi.bold(panel.title))}`, 1, 0),
       new Text(panel.lines.length === 0 ? ansi.dim('没有内容') : panel.lines.join('\n'), 2, 0),
-      new Text(ansi.dim('/close 关闭面板；可以直接输入下一条命令'), 1, 0),
+      new Text(ansi.dim('Esc 或 /close 关闭面板；此处可直接输入下一条命令'), 1, 0),
     ]).render(width)
   }
 }
