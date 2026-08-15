@@ -1,0 +1,5 @@
+# Bilingual-pair consistency record: the git blob hash of each side as of the
+# last confirmed-consistent state. Both languages carry equal authority. After
+# editing either side, update both values with `git hash-object docs/design/<file>`.
+2026-08-15-tui-in-process-api-client.md: f14a3bfaff6a64aaf39a59856efb0e0b9b60daab
+2026-08-15-tui-in-process-api-client.zh.md: 6ecc799b50569f95d44f9993fea62f060027847b
