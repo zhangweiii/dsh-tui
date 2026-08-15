@@ -94,6 +94,7 @@ export class TestController {
   startCount = 0
   disposeCount = 0
   submitResult: (text: string, mode: 'queue' | 'steer') => Promise<boolean> = async () => true
+  answerQuestionResult = true
   private readonly listeners = new Set<() => void>()
 
   constructor(state: Partial<TuiViewState> = {}) {
@@ -124,7 +125,10 @@ export class TestController {
   closeOverlay(): void { this.closeOverlayCount += 1 }
   async cancel(): Promise<void> { this.cancelCount += 1 }
   async answerApproval(outcome: string): Promise<void> { this.approvals.push(outcome) }
-  async answerQuestion(answer: unknown): Promise<void> { this.questionAnswers.push(answer) }
+  async answerQuestion(answer: unknown): Promise<boolean> {
+    this.questionAnswers.push(answer)
+    return this.answerQuestionResult
+  }
   async cancelQuestion(): Promise<void> { this.cancelQuestionCount += 1 }
   dispose(): void { this.disposeCount += 1 }
 

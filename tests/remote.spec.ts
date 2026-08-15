@@ -13,6 +13,7 @@ afterEach(() => {
   globalThis.fetch = originalFetch
   globalThis.WebSocket = originalWebSocket
   vi.restoreAllMocks()
+  vi.useRealTimers()
 })
 
 function hostDescription(rpcId: string): Response {
@@ -212,6 +213,40 @@ describe('remote Web Host client', () => {
     expect(onOpen).toHaveBeenCalledTimes(2)
 
     abort.abort()
+  })
+
+  it('times out a WebSocket handshake that never completes and reconnects', async () => {
+    vi.useFakeTimers()
+    // A socket that never fires `open`: without a connect timeout the event
+    // stream would hang forever waiting for onOpen.
+    class StalledSocket {
+      static readonly CONNECTING = 0
+      static readonly OPEN = 1
+      static readonly instances: StalledSocket[] = []
+      readonly url: string
+      readyState = StalledSocket.CONNECTING
+      constructor(url: string | URL) {
+        StalledSocket.instances.push(this)
+        this.url = String(url)
+      }
+      addEventListener(): void {}
+      removeEventListener(): void {}
+      close(): void { this.readyState = 3 }
+    }
+    globalThis.WebSocket = StalledSocket as never
+    const client = new RemoteApiClient('http://127.0.0.1:4180')
+    const abort = new AbortController()
+    const stream = client.events.mux({}, abort.signal)[Symbol.asyncIterator]()
+    void stream.next()
+    await vi.waitFor(() => { expect(StalledSocket.instances).toHaveLength(1) })
+
+    // Advancing past the 10s handshake timeout plus the first ~200ms backoff
+    // must surface a retry (a second socket) instead of hanging forever.
+    await vi.advanceTimersByTimeAsync(10_000 + 200)
+    expect(StalledSocket.instances).toHaveLength(2)
+
+    abort.abort()
+    vi.useRealTimers()
   })
 })
 

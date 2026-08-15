@@ -17,6 +17,7 @@ const HOST_EVENTS_PATH = '/api/events.host'
 const AUTO_CONNECT_TIMEOUT_MS = 500
 const EXPLICIT_CONNECT_TIMEOUT_MS = 5_000
 const DEFAULT_TIMEOUT_MS = 30_000
+const WS_CONNECT_TIMEOUT_MS = 10_000
 const RECONNECT_INITIAL_DELAY_MS = 100
 const RECONNECT_MAX_DELAY_MS = 2_000
 
@@ -366,12 +367,26 @@ export class RemoteApiClient extends ApiClientBase {
     const handleAbort = (): void => {
       if (socket.readyState === WebSocket.CONNECTING || socket.readyState === WebSocket.OPEN) socket.close()
     }
+    const handleConnectTimeout = (): void => {
+      if (signal.aborted) return
+      // Treat a stalled handshake as a connection failure so the outer layer
+      // backs off and reconnects instead of hanging forever on `onOpen`.
+      enqueue({ kind: 'error', error: new Error(`WebSocket 连接超时：${url.href}`) })
+    }
     socket.addEventListener('open', handleOpen)
     socket.addEventListener('message', handleMessage)
     socket.addEventListener('close', handleClose, { once: true })
     socket.addEventListener('error', handleError, { once: true })
     signal.addEventListener('abort', handleAbort, { once: true })
     if (signal.aborted) handleAbort()
+    // Arm the connect timeout only while the handshake is still pending. It is
+    // cleared on open or abort so a late error frame never aborts a live socket.
+    let connectTimer: NodeJS.Timeout | undefined
+    const clearConnectTimer = (): void => { clearTimeout(connectTimer) }
+    if (socket.readyState === WebSocket.CONNECTING) {
+      connectTimer = setTimeout(handleConnectTimeout, WS_CONNECT_TIMEOUT_MS)
+      signal.addEventListener('abort', clearConnectTimer, { once: true })
+    }
     try {
       while (true) {
         while (inbox.length > 0) {
@@ -383,7 +398,9 @@ export class RemoteApiClient extends ApiClientBase {
         await new Promise<void>((resolve) => { wake = resolve })
       }
     } finally {
+      clearTimeout(connectTimer)
       signal.removeEventListener('abort', handleAbort)
+      signal.removeEventListener('abort', clearConnectTimer)
       socket.removeEventListener('open', handleOpen)
       socket.removeEventListener('message', handleMessage)
       socket.removeEventListener('close', handleClose)

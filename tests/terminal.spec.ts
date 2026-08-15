@@ -294,6 +294,38 @@ describe('pi-tui terminal application', () => {
     application.stop()
   })
 
+  it('re-enables the question editor after a rejected answer so the user can retry', async () => {
+    const terminal = new TestTerminal(100, 16)
+    const controller = new TestController()
+    controller.answerQuestionResult = false
+    const application = new TerminalApplication(controller.asController(), { continueLatest: false }, { terminal })
+    application.start()
+    await settle(terminal)
+
+    controller.publish({
+      interaction: {
+        kind: 'question', rpcId: 'rpc-question' as never, sessionId: 'session' as never,
+        questions: [{ id: 'mode', question: '选择模式？', options: [{ label: '快' }, { label: '稳' }] }],
+      },
+    })
+    await settle(terminal)
+    terminal.send('1')
+    terminal.send('\r')
+    await settle(terminal)
+    expect(controller.questionAnswers).toEqual([{ answers: [{ id: 'mode', selected: ['快'] }] }])
+
+    // The rejected submission must not leave the composer stuck on a pending
+    // state: the question prompt returns and the editor accepts a retry.
+    await settle(terminal)
+    expect(terminal.viewport()).toContain('选择模式？')
+    terminal.send('2')
+    terminal.send('\r')
+    await settle(terminal)
+    expect(controller.questionAnswers).toHaveLength(2)
+    expect(controller.questionAnswers[1]).toEqual({ answers: [{ id: 'mode', selected: ['稳'] }] })
+    application.stop()
+  })
+
   it('does not overwrite text typed while a rejected async submission is pending', async () => {
     const terminal = new TestTerminal(90, 16)
     const controller = new TestController()

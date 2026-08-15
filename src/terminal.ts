@@ -187,6 +187,20 @@ export class TerminalApplication {
     this.questionSubmitting = true
     this.view.update(this.state, this.questionIndex, true)
     this.tui.requestRender()
-    await this.controller.answerQuestion({ answers })
+    const accepted = await this.controller.answerQuestion({ answers })
+    if (this.stopped) return
+    if (accepted) {
+      // Wait for the host `question/resolved` frame; update() clears the
+      // pending state once the interaction is released.
+      return
+    }
+    // The answer was rejected or the transport failed without resolving the
+    // interaction. Re-enable the editor and clear its text so the user can
+    // retry in place instead of being stuck on a pending submission (see
+    // controller.answerQuestion).
+    this.questionSubmitting = false
+    this.view.questionEditor.setText('')
+    this.view.update(this.state, this.questionIndex, false)
+    this.tui.requestRender()
   }
 }

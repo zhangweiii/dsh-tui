@@ -205,6 +205,8 @@ export class TuiController {
   private target: TuiTarget | undefined
   private readonly targetStack: TuiTarget[] = []
   private historyEntries: HistoryEntry[] = []
+  /** Durable event sequences already folded for the current transcript. */
+  private readonly seenEventSeqs = new Set<number>()
   private hasMoreHistory = false
   private historyResyncing = false
   private modelGroups: ModelProviderGroup[] = []
@@ -338,13 +340,21 @@ export class TuiController {
     }
   }
 
+  /** Replace `historyEntries` and rebuild the seen-seq set from it. */
+  private replaceHistory(entries: HistoryEntry[]): void {
+    this.historyEntries = entries
+    this.seenEventSeqs.clear()
+    for (const entry of entries) this.seenEventSeqs.add(entry.event.seq)
+  }
+
   private applyMuxEnvelope(rpcId: Parameters<typeof applyMuxFrame>[1], frame: Parameters<typeof applyMuxFrame>[2]): void {
     if (frame.type === 'session/subscribed' && frame.sessionId === this.state.sessionId
       && frame.lastSeq > this.state.lastSeq) {
       this.scheduleHistoryResync()
     }
     if (frame.type === 'session/event' && frame.sessionId === this.state.sessionId
-      && !this.historyEntries.some(entry => entry.event.seq === frame.event.seq)) {
+      && !this.seenEventSeqs.has(frame.event.seq)) {
+      this.seenEventSeqs.add(frame.event.seq)
       this.historyEntries.push({ event: frame.event, ...(frame.view === undefined ? {} : { view: frame.view }) })
     }
     this.update(state => applyMuxFrame(state, rpcId, frame))
@@ -397,7 +407,7 @@ export class TuiController {
 
     const bySeq = new Map<number, HistoryEntry>()
     for (const entry of [...this.historyEntries, ...fetched]) bySeq.set(entry.event.seq, entry)
-    this.historyEntries = [...bySeq.values()].sort((left, right) => left.event.seq - right.event.seq)
+    this.replaceHistory([...bySeq.values()].sort((left, right) => left.event.seq - right.event.seq))
     const current = this.state
     const baselineProjections = projections ?? current.projections
     const folded = applyHistory({
@@ -448,7 +458,7 @@ export class TuiController {
       this.api.sessions.models({ sessionId: summary.sessionId }),
     ])
     const history = value(historyResponse)
-    this.historyEntries = [...history.events]
+    this.replaceHistory([...history.events])
     this.hasMoreHistory = history.hasMore
     let next = applyHistory(this.state, history.events)
     if (modelsResponse.result.ok) this.modelGroups = modelsResponse.result.value.groups
@@ -496,7 +506,7 @@ export class TuiController {
       cwd,
       sessions,
     })
-    this.historyEntries = [...history.events]
+    this.replaceHistory([...history.events])
     this.hasMoreHistory = history.hasMore
     const next = applyHistory(this.state, history.events)
     const projections = { ...next.projections, ...(history.projections?.values ?? {}) }
@@ -535,6 +545,11 @@ export class TuiController {
       if (config.initialPrompt !== undefined) await this.send(config.initialPrompt)
     } catch (error) {
       this.historyReady = true
+      // Discard frames buffered while the baseline history was loading: the
+      // session failed to come up, so replaying them keeps a stale buffer
+      // around that would otherwise keep growing. New frames flow straight to
+      // applyMuxEnvelope now that historyReady is true.
+      this.bufferedMux = []
       this.publish({ ...this.state, phase: 'error', notice: message(error) })
     }
   }
@@ -720,7 +735,7 @@ export class TuiController {
       : value(await this.api.subagents.history({ ...target.address, beforeSeq, maxMessages: 100 }))
     const bySeq = new Map<number, HistoryEntry>()
     for (const entry of [...page.events, ...this.historyEntries]) bySeq.set(entry.event.seq, entry)
-    this.historyEntries = [...bySeq.values()].sort((left, right) => left.event.seq - right.event.seq)
+    this.replaceHistory([...bySeq.values()].sort((left, right) => left.event.seq - right.event.seq))
     this.hasMoreHistory = page.hasMore
     const current = this.state
     const folded = applyHistory({
@@ -1755,11 +1770,13 @@ export class TuiController {
   /**
    * Answer the currently displayed structured question batch.
    * @param answer - Complete answer batch for the pending request.
+   * @returns Whether the answer was accepted; `false` leaves the question open
+   * so the user can retry instead of being stuck on a pending submission.
    */
-  async answerQuestion(answer: AskUserQuestionAnswer): Promise<void> {
+  async answerQuestion(answer: AskUserQuestionAnswer): Promise<boolean> {
     const interaction = this.state.interaction
-    if (interaction?.kind !== 'question') return
-    await this.respondQuestion(interaction, answer)
+    if (interaction?.kind !== 'question') return false
+    return await this.respondQuestion(interaction, answer)
   }
 
   /** Cancel the currently displayed question batch, matching the Web close action. */
@@ -1782,7 +1799,7 @@ export class TuiController {
     }
   }
 
-  private async respondQuestion(interaction: PendingQuestion, answer: AskUserQuestionAnswer): Promise<void> {
+  private async respondQuestion(interaction: PendingQuestion, answer: AskUserQuestionAnswer): Promise<boolean> {
     try {
       const receipt = await this.api.respond({
         type: 'client-response',
@@ -1791,8 +1808,10 @@ export class TuiController {
       })
       if (!receipt.accepted) throw new Error(`响应被拒绝：${receipt.reason}`)
       this.setNotice('已提交回答')
+      return true
     } catch (error) {
       this.setNotice(`回答失败：${message(error)}`)
+      return false
     }
   }
 
