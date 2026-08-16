@@ -2,7 +2,7 @@
 
 import type { AskUserQuestionAnswerItem, AskUserQuestionItem } from '@deepseek-ai/dsh-user-questions/types'
 import {
-  Editor, fuzzyFilter, Input, Markdown, matchesKey, ScrollView, SelectList, stripTerminalSequences, Text, truncateToWidth, visibleWidth, VStack,
+  Editor, fuzzyFilter, getKeybindings, Input, Markdown, matchesKey, ScrollView, SelectList, stripTerminalSequences, Text, truncateToWidth, visibleWidth, VStack,
   wrapTextWithAnsi, type Component, type Focusable, type SelectItem, type TUI,
 } from '@earendil-works/pi-tui'
 import {
@@ -187,7 +187,7 @@ class TranscriptDocument implements Component {
     if (this.state.rows.length === 0) {
       rendered.push(...new Text(ansi.dim([
         '输入消息开始对话；支持 / 命令、实时工具输出与持久会话。',
-        'Enter 发送 · Tab/↑↓ 补全命令 · Alt+Enter 插话 · Shift+Enter 换行 · Esc 清空/取消 · Ctrl+C 退出',
+        'Enter 发送 · ↑/↓ 或 Ctrl+N/P 历史与补全 · Tab 完成 · Alt+Enter 插话 · Shift+Enter 换行 · Esc 清空/取消 · Ctrl+C 退出',
       ].join('\n')), 1, 1).render(width))
     }
     for (const row of this.state.rows) {
@@ -456,7 +456,7 @@ class QuestionPicker implements Component, Focusable {
 
   render(width: number): string[] {
     if (this.mode === 'select') {
-      return [...this.list.render(width), ansi.dim('↑/↓ 选择 · Enter 确认 · 输入即 other 自定义 · Esc 取消')]
+      return [...this.list.render(width), ansi.dim('↑/↓ 或 Ctrl+N/P 选择 · Enter 确认 · 输入即 other 自定义 · Esc 取消')]
     }
     return [
       ...this.editorBox.render(width),
@@ -587,15 +587,18 @@ class ProviderSearchPicker implements Component, Focusable {
   invalidate(): void { this.input.invalidate() }
 
   handleInput(data: string): void {
-    if (matchesKey(data, 'up')) {
+    // Same keybindings as every other list: Up/Down or Ctrl+N/P move the
+    // highlight; Escape cancels the search.
+    const kb = getKeybindings()
+    if (kb.matches(data, 'tui.select.up')) {
       if (this.filtered.length > 0) this.selectedIndex = Math.max(0, this.selectedIndex - 1)
       return
     }
-    if (matchesKey(data, 'down')) {
+    if (kb.matches(data, 'tui.select.down')) {
       if (this.filtered.length > 0) this.selectedIndex = Math.min(this.filtered.length - 1, this.selectedIndex + 1)
       return
     }
-    if (matchesKey(data, 'escape')) {
+    if (kb.matches(data, 'tui.select.cancel')) {
       this.cancel()
       return
     }
@@ -621,7 +624,7 @@ class ProviderSearchPicker implements Component, Focusable {
           })),
       ...(this.filtered.length > maxVisible ? [ansi.dim(`  (${String(this.selectedIndex + 1)}/${String(this.filtered.length)})`)] : []),
       '',
-      ansi.dim('输入搜索 · ↑/↓ 选择 · Enter 确认 · Esc 取消'),
+      ansi.dim('输入搜索 · ↑/↓ 或 Ctrl+N/P 选择 · Enter 确认 · Esc 取消'),
     ]
   }
 }
@@ -729,7 +732,7 @@ class ProviderWizardPicker implements Component, Focusable {
     return [
       ...summary,
       ...this.list.render(width),
-      ansi.dim(wizard?.step === 'api' ? '↑/↓ 选择协议 · Enter 确认 · Esc 取消' : '↑/↓ 选择 · Enter 确认 · Esc 取消'),
+      ansi.dim(wizard?.step === 'api' ? '↑/↓ 或 Ctrl+N/P 选择协议 · Enter 确认 · Esc 取消' : '↑/↓ 或 Ctrl+N/P 选择 · Enter 确认 · Esc 取消'),
     ]
   }
 }
@@ -937,7 +940,7 @@ export class TerminalView {
         this.composer.set([
           new Text(ansi.green(ansi.bold('请确认你的回答')), 1, 0),
           this.questionReview,
-          new Text(ansi.dim('↑/↓ 查看 · Enter 修改选中项或确认提交 · Esc 取消请求'), 1, 0),
+          new Text(ansi.dim('↑/↓ 或 Ctrl+N/P 查看 · Enter 修改选中项或确认提交 · Esc 取消请求'), 1, 0),
         ], this.questionReview)
         return
       }
@@ -987,7 +990,7 @@ export class TerminalView {
       this.composer.set([
         new Text(ansi.magenta(ansi.bold(picker.title)), 1, 0),
         this.picker as SelectList,
-        new Text(ansi.dim('↑/↓ 选择 · Enter 确认 · Esc 取消'), 1, 0),
+        new Text(ansi.dim('↑/↓ 或 Ctrl+N/P 选择 · Enter 确认 · Esc 取消'), 1, 0),
       ], this.picker)
       return
     }

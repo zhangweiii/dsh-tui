@@ -72,6 +72,14 @@ export class TerminalApplication {
     setKeybindings(new KeybindingsManager(TUI_KEYBINDINGS, {
       'tui.altScreen.top': 'ctrl+shift+home',
       'tui.altScreen.bottom': 'ctrl+shift+end',
+      // Emacs-style navigation: Ctrl+N/P mirror Up/Down everywhere. In the
+      // composer and question editors they move the cursor and traverse history;
+      // in the slash autocomplete popup and every SelectList (pickers, question
+      // menus, review, provider search, wizard) they move the highlight.
+      'tui.editor.cursorUp': ['up', 'ctrl+p'],
+      'tui.editor.cursorDown': ['down', 'ctrl+n'],
+      'tui.select.up': ['up', 'ctrl+p'],
+      'tui.select.down': ['down', 'ctrl+n'],
     }))
     this.tui = new TuiAltScreen(options.terminal ?? new ProcessTerminal(), true, undefined, {
       mouse: true,
