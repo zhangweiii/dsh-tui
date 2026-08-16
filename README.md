@@ -1,5 +1,7 @@
 # `@zhangweiii/dsh-tui`
 
+[![npm](https://img.shields.io/npm/v/@zhangweiii/dsh-tui)](https://www.npmjs.com/package/@zhangweiii/dsh-tui) [![CI](https://github.com/zhangweiii/dsh-tui/actions/workflows/ci.yml/badge.svg)](https://github.com/zhangweiii/dsh-tui/actions/workflows/ci.yml)
+
 English | [中文](README.zh.md)
 
 An out-of-tree interactive terminal bundle for DeepSeek Harness. This directory is a self-contained npm package: it does not join or patch the DeepSeek Harness source workspace. Its [`cordis.patch.yml`](cordis.patch.yml) layers terminal Host services and the agent-preset roster over `dsh-base`, without mounting an HTTP server or browser runtime. At startup the renderer connects to a Web Host already listening at `http://127.0.0.1:3080`; when that address is unavailable it falls back to an `InProcessApiClient` over its own `ctx.apiProxy`.
@@ -7,7 +9,7 @@ An out-of-tree interactive terminal bundle for DeepSeek Harness. This directory 
 ## Usage
 
 ```sh
-dsh plugin --profile tui add .
+dsh plugin --profile tui add @zhangweiii/dsh-tui
 dsh --profile tui
 dsh --profile tui "explain this repository"
 dsh --profile tui --continue
@@ -17,7 +19,7 @@ dsh --profile tui --connect http://127.0.0.1:8080
 dsh --profile tui --standalone
 ```
 
-Run the install command from this package directory. The installed `dsh` command initializes the `tui` profile with `dsh-base` and records this package's declared `dsh.bundle`; neither the CLI nor its built-in profile templates contain TUI-specific code. After a future registry release, `@zhangweiii/dsh-tui` may replace `.`. This repository has not published an npm release yet.
+The install command pulls the package straight from the npm registry (a local checkout also works with `add .`). The installed `dsh` command initializes the `tui` profile with `dsh-base` and records this package's declared `dsh.bundle`; neither the CLI nor its built-in profile templates contain TUI-specific code.
 
 The package requires an installed `dsh 0.1.0-rc.6` or compatible host and does not ship a second copy of the DSH core modules.
 

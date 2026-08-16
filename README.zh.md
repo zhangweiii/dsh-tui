@@ -1,5 +1,7 @@
 # `@zhangweiii/dsh-tui`
 
+[![npm](https://img.shields.io/npm/v/@zhangweiii/dsh-tui)](https://www.npmjs.com/package/@zhangweiii/dsh-tui) [![CI](https://github.com/zhangweiii/dsh-tui/actions/workflows/ci.yml/badge.svg)](https://github.com/zhangweiii/dsh-tui/actions/workflows/ci.yml)
+
 [English](README.md) | 中文
 
 DeepSeek Harness 的树外交互终端组合包。该目录是一个可单独构建和安装的 npm 包，不加入、也不修改 DeepSeek Harness 源码 workspace。它的 [`cordis.patch.yml`](cordis.patch.yml) 在 `dsh-base` 之上叠加终端 Host 服务和 agent preset roster，但不挂载 HTTP server 或浏览器 runtime。renderer 启动时会连接已经监听 `http://127.0.0.1:3080` 的 Web Host；该地址不可用时，则回退到自身 `ctx.apiProxy` 上的 `InProcessApiClient`。
@@ -7,7 +9,7 @@ DeepSeek Harness 的树外交互终端组合包。该目录是一个可单独构
 ## 使用方式
 
 ```sh
-dsh plugin --profile tui add .
+dsh plugin --profile tui add @zhangweiii/dsh-tui
 dsh --profile tui
 dsh --profile tui "explain this repository"
 dsh --profile tui --continue
@@ -17,7 +19,7 @@ dsh --profile tui --connect http://127.0.0.1:8080
 dsh --profile tui --standalone
 ```
 
-请在该独立包目录中执行安装命令。已安装的 `dsh` 命令会用 `dsh-base` 初始化 `tui` profile，并记录本包声明的 `dsh.bundle`；CLI 和内置 profile 模板都不包含 TUI 专用代码。未来发布到 registry 后，可将 `.` 换成 `@zhangweiii/dsh-tui`；当前仓库尚未发布 npm 版本。
+安装命令会直接从 npm registry 拉取本包（本地检出也可以用 `add .` 安装）。已安装的 `dsh` 命令会用 `dsh-base` 初始化 `tui` profile，并记录本包声明的 `dsh.bundle`；CLI 和内置 profile 模板都不包含 TUI 专用代码。
 
 本包要求宿主已经安装 `dsh 0.1.0-rc.6` 或兼容版本；发布包不会携带第二份 DSH 核心模块。
 
