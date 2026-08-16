@@ -704,6 +704,78 @@ describe('pi-tui terminal application', () => {
     application.stop()
   })
 
+  it('searches provider choices before selecting, like pi /login', async () => {
+    const terminal = new TestTerminal(100, 16)
+    const controller = new TestController({
+      picker: {
+        kind: 'provider-setup', title: '配置 Provider', current: undefined,
+        items: [
+          { value: 'google', label: 'Google', description: '密钥未配置 · google' },
+          { value: 'openai', label: 'OpenAI', description: '密钥已配置 · openai' },
+        ],
+      },
+    })
+    const application = new TerminalApplication(controller.asController(), { continueLatest: false }, { terminal })
+    application.start()
+    terminal.send('goo')
+    await settle(terminal)
+
+    expect(terminal.viewport()).toContain('Google')
+    expect(terminal.viewport()).not.toContain('OpenAI')
+    terminal.send('\r')
+    await settle(terminal)
+    expect(controller.pickerValues).toEqual(['google'])
+    application.stop()
+  })
+
+  it('renders an existing provider address exactly once', async () => {
+    const terminal = new TestTerminal(100, 16)
+    const wizard = {
+      kind: 'existing' as const, namespace: 'llm-pi-ai', settingsPath: ['providers', 'google'], revision: 8,
+      providerId: 'google', declared: false, taken: ['google'], protocols: [],
+      displayName: '', baseURL: '', api: '', apiKey: '', models: [], candidates: [], selectedCandidates: [],
+      credentialRef: 'GOOGLE_API_KEY', credentialRefNamed: true, supportsCredentialRef: true,
+      credentialConfigured: false, profileConfigured: true, dirty: [], committed: false, busy: false,
+      applies: 'live' as const, step: 'review' as const, editing: undefined,
+    }
+    const controller = new TestController({ providerWizard: wizard })
+    const application = new TerminalApplication(controller.asController(), { continueLatest: false }, { terminal })
+    application.start()
+    await settle(terminal)
+
+    expect(terminal.viewport()).toContain('llm-pi-ai/providers/google')
+    expect(terminal.viewport()).not.toContain('providers/google/google')
+    application.stop()
+  })
+
+  it('uses a focused pi-style prompt instead of a provider field form', async () => {
+    const terminal = new TestTerminal(100, 16)
+    const wizard = {
+      kind: 'custom' as const, namespace: 'llm-pi-ai', settingsPath: ['providers'], revision: 8,
+      providerId: '', declared: true, taken: [], protocols: ['openai-completions'],
+      displayName: '', baseURL: '', api: 'openai-completions', apiKey: '', models: [],
+      candidates: [], selectedCandidates: [], credentialRef: '', credentialRefNamed: false, supportsCredentialRef: true,
+      credentialConfigured: false, profileConfigured: false,
+      dirty: [], committed: false, busy: false, applies: 'live' as const,
+      step: 'providerId' as const, editing: 'providerId' as const,
+    }
+    const controller = new TestController({ providerWizard: wizard })
+    const application = new TerminalApplication(controller.asController(), { continueLatest: false }, { terminal })
+    application.start()
+    await settle(terminal)
+
+    expect(terminal.viewport()).toContain('添加自定义 Provider')
+    expect(terminal.viewport()).toContain('Provider ID（必填）')
+    expect(terminal.viewport()).not.toContain('获取可用模型')
+    expect(terminal.viewport()).not.toContain('保存 Provider')
+
+    terminal.send('my-custom')
+    terminal.send('\r')
+    await settle(terminal)
+    expect(controller.wizardValues).toContainEqual({ row: 'providerId', text: 'my-custom' })
+    application.stop()
+  })
+
   it('does not overwrite text typed while a rejected async submission is pending', async () => {
     const terminal = new TestTerminal(90, 16)
     const controller = new TestController()

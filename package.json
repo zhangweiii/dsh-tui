@@ -68,6 +68,7 @@
     "prepublishOnly": "npm run check"
   },
   "dependencies": {
+    "@deepseek-ai/dsh-client-schema-form": "^0.1.0-rc.6",
     "@deepseek-ai/schemastery": "^3.18.1",
     "@earendil-works/pi-tui": "0.84.2",
     "commander": "^15.0.0"

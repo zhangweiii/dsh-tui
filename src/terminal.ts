@@ -72,6 +72,10 @@ export class TerminalApplication {
       cancelQuestionRequest: () => { void this.controller.cancelQuestion() },
       editQuestion: (index) => { this.editQuestion(index) },
       confirmQuestionAnswers: () => { void this.confirmQuestionAnswers() },
+      chooseProviderWizardRow: (row) => { this.controller.chooseProviderWizardRow(row) },
+      submitProviderWizardValue: (row, text) => { this.controller.submitProviderWizardValue(row, text) },
+      cancelProviderWizard: () => { this.controller.cancelProviderWizard() },
+      backProviderWizardToMenu: () => { this.controller.backProviderWizardToMenu() },
     })
     this.view.editor.setAutocompleteProvider(new CombinedAutocompleteProvider(slashCommands(), config.cwd ?? process.cwd()))
     this.view.editor.onSubmit = text => { void this.submit(text, 'queue') }
@@ -149,6 +153,7 @@ export class TerminalApplication {
       }
       return undefined
     }
+    if (this.state.providerWizard !== undefined) return undefined
     if (matchesKey(data, 'alt+enter')) {
       const text = this.view.editor.getExpandedText().trim()
       if (text !== '') {

@@ -2,10 +2,14 @@
 
 import type { AskUserQuestionAnswerItem, AskUserQuestionItem } from '@deepseek-ai/dsh-user-questions/types'
 import {
-  Editor, Markdown, matchesKey, ScrollView, SelectList, stripTerminalSequences, Text, truncateToWidth, visibleWidth, VStack,
+  Editor, fuzzyFilter, Input, Markdown, matchesKey, ScrollView, SelectList, stripTerminalSequences, Text, truncateToWidth, visibleWidth, VStack,
   wrapTextWithAnsi, type Component, type Focusable, type SelectItem, type TUI,
 } from '@earendil-works/pi-tui'
-import { contentText, isExpandedRow, projectionStatus, type TranscriptRow, type TuiViewState } from './model.ts'
+import {
+  contentText, isExpandedRow, projectionStatus, type TranscriptRow, type TuiPicker,
+  type TuiPickerItem, type TuiProviderWizard, type TuiViewState,
+} from './model.ts'
+import { providerSetupRows, providerSetupValidation, type ProviderSetupField } from './provider-setup.ts'
 import { ansi, editorTheme, markdownTheme, selectListTheme } from './theme.ts'
 
 const OSC133_PROMPT_START = '\u001B]133;A\u0007'
@@ -542,6 +546,244 @@ interface QuestionReviewActions {
   cancel(): void
 }
 
+class ProviderSearchPicker implements Component, Focusable {
+  private readonly input = new Input()
+  private items: TuiPickerItem[] = []
+  private filtered: TuiPickerItem[] = []
+  private selectedIndex = 0
+  private signature = ''
+  private _focused = false
+
+  constructor(
+    private readonly choose: (value: string) => void,
+    private readonly cancel: () => void,
+  ) {
+    this.input.onSubmit = () => {
+      const selected = this.filtered[this.selectedIndex]
+      if (selected !== undefined) this.choose(selected.value)
+    }
+    this.input.onEscape = this.cancel
+  }
+
+  update(picker: TuiPicker): void {
+    const signature = picker.items.map(item => `${item.value}\u0001${item.label}\u0001${item.description ?? ''}`).join('\u0002')
+    if (signature === this.signature) return
+    this.signature = signature
+    this.items = picker.items
+    this.input.setValue('')
+    this.filter('')
+  }
+
+  private filter(query: string): void {
+    this.filtered = query === ''
+      ? this.items
+      : fuzzyFilter(this.items, query, item => `${item.label} ${item.value} ${item.description ?? ''}`)
+    this.selectedIndex = Math.max(0, Math.min(this.selectedIndex, this.filtered.length - 1))
+  }
+
+  get focused(): boolean { return this._focused }
+  set focused(value: boolean) {
+    this._focused = value
+    this.input.focused = value
+  }
+
+  invalidate(): void { this.input.invalidate() }
+
+  handleInput(data: string): void {
+    if (matchesKey(data, 'up')) {
+      if (this.filtered.length > 0) this.selectedIndex = Math.max(0, this.selectedIndex - 1)
+      return
+    }
+    if (matchesKey(data, 'down')) {
+      if (this.filtered.length > 0) this.selectedIndex = Math.min(this.filtered.length - 1, this.selectedIndex + 1)
+      return
+    }
+    if (matchesKey(data, 'escape')) {
+      this.cancel()
+      return
+    }
+    this.input.handleInput(data)
+    this.filter(this.input.getValue())
+  }
+
+  render(width: number): string[] {
+    const maxVisible = 8
+    const start = Math.max(0, Math.min(this.selectedIndex - Math.floor(maxVisible / 2), this.filtered.length - maxVisible))
+    const visible = this.filtered.slice(start, start + maxVisible)
+    return [
+      ...this.input.render(width),
+      '',
+      ...(visible.length === 0
+        ? [ansi.dim('  没有匹配的 Provider')]
+        : visible.map((item, offset) => {
+            const selected = start + offset === this.selectedIndex
+            const prefix = selected ? ansi.cyan('→ ') : '  '
+            const label = selected ? ansi.cyan(item.label) : item.label
+            const detail = item.description === undefined ? '' : ansi.dim(`  ${item.description}`)
+            return truncateToWidth(`${prefix}${label}${detail}`, width)
+          })),
+      ...(this.filtered.length > maxVisible ? [ansi.dim(`  (${String(this.selectedIndex + 1)}/${String(this.filtered.length)})`)] : []),
+      '',
+      ansi.dim('输入搜索 · ↑/↓ 选择 · Enter 确认 · Esc 取消'),
+    ]
+  }
+}
+
+/**
+ * Progressive provider setup inspired by pi's login flow: one focused prompt,
+ * a small protocol selector, then a compact review. It deliberately avoids a
+ * settings-form menu; advanced fields remain owned by the settings commands.
+ */
+class ProviderWizardPicker implements Component, Focusable {
+  private list: SelectList
+  /** Dedicated single-line dialog input; never reuses the chat composer Editor. */
+  private readonly input: Input
+  private _focused = false
+  private editingRow: ProviderSetupField | undefined
+  private wizard: TuiProviderWizard | undefined
+  private rowsSignature = ''
+  private editPrompt = ''
+
+  constructor(_tui: TUI, private readonly actions: ProviderWizardActions) {
+    this.input = new Input()
+    this.input.onSubmit = text => {
+      if (this.editingRow !== undefined) this.actions.submitValue(this.editingRow, text)
+    }
+    this.input.onEscape = () => { this.actions.cancel() }
+    this.list = new SelectList([], 8, selectListTheme)
+    this.updateList([])
+  }
+
+  update(wizard: TuiProviderWizard, editingRow: ProviderSetupField | undefined): void {
+    this.wizard = wizard
+    if (editingRow !== this.editingRow) {
+      this.editingRow = editingRow
+      const field = editingRow === undefined
+        ? undefined
+        : providerSetupRows(wizard).find(row => row.kind === 'field' && row.field === editingRow)
+      this.input.setValue(field?.kind === 'field' && field.secret !== true ? field.value ?? '' : '')
+    }
+    if (editingRow !== undefined) {
+      const prompt = wizardPrompt(wizard, editingRow)
+      if (prompt !== this.editPrompt) this.editPrompt = prompt
+      return
+    }
+    this.editPrompt = ''
+    this.updateList(wizardRowsForView(wizard))
+  }
+
+  /** Rebuild the menu list when rows change; keeps selection on unrelated updates. */
+  private updateList(rows: SelectItem[]): void {
+    const signature = rows.map(row => `${row.value}\u0001${row.label}\u0001${row.description ?? ''}`).join('\u0002')
+    if (this.rowsSignature === signature) return
+    const selected = this.list.getSelectedItem()?.value
+    this.rowsSignature = signature
+    this.list = new SelectList(rows, 8, selectListTheme)
+    const selectedIndex = selected === undefined ? -1 : rows.findIndex(row => row.value === selected)
+    if (selectedIndex >= 0) this.list.setSelectedIndex(selectedIndex)
+    this.list.onCancel = () => { this.actions.cancel() }
+    this.list.onSelect = item => { this.actions.choose(Number(item.value)) }
+  }
+
+  get focused(): boolean { return this._focused }
+  set focused(value: boolean) {
+    this._focused = value
+    this.input.focused = this.editingRow !== undefined && value
+  }
+
+  invalidate(): void {
+    this.input.invalidate()
+    this.list.invalidate()
+  }
+
+  handleInput(data: string): void {
+    if (this.editingRow !== undefined) {
+      this.input.handleInput(data)
+      return
+    }
+    this.list.handleInput(data)
+  }
+
+  render(width: number): string[] {
+    if (this.editingRow !== undefined) {
+      return [
+        ansi.yellow(ansi.bold(this.editPrompt)),
+        ...this.input.render(width),
+        ansi.dim('Enter 继续 · Esc 取消'),
+      ]
+    }
+    const wizard = this.wizard
+    if (wizard?.busy === true && wizard.step === 'models') {
+      return [ansi.dim('⏳ 正在从 endpoint 获取模型…'), ansi.dim('Esc 取消')]
+    }
+    const modelRow = wizard === undefined
+      ? undefined
+      : providerSetupRows(wizard).find(row => row.kind === 'field' && row.field === 'models')
+    const modelValue = modelRow?.kind === 'field' ? modelRow.value : undefined
+    const summary = wizard?.step === 'review'
+      ? [
+          `${ansi.dim('Provider')}  ${wizard.providerId}`,
+          `${ansi.dim('Endpoint')}  ${wizard.baseURL || '默认'}`,
+          `${ansi.dim('协议')}      ${wizard.api || 'adapter 默认'}`,
+          `${ansi.dim('模型')}      ${modelValue ?? 'adapter catalog'}`,
+          '',
+        ]
+      : []
+    return [
+      ...summary,
+      ...this.list.render(width),
+      ansi.dim(wizard?.step === 'api' ? '↑/↓ 选择协议 · Enter 确认 · Esc 取消' : '↑/↓ 选择 · Enter 确认 · Esc 取消'),
+    ]
+  }
+}
+
+/** Header prompt for a field edit; API keys remain write-only presentation. */
+function wizardPrompt(wizard: TuiProviderWizard, editing: ProviderSetupField): string {
+  const row = providerSetupRows(wizard).find(item => item.kind === 'field' && item.field === editing)
+  if (row?.kind !== 'field') return ''
+  if (editing === 'apiKey') {
+    return wizard.kind === 'existing'
+      ? `输入 ${wizard.providerId} API Key（只写；Enter 保存）`
+      : 'API Key（可留空使用 provider 原生认证）'
+  }
+  if (editing === 'models') return '模型 ID（逗号分隔；留空自动探测）'
+  return `${row.label}${row.required === true ? '（必填）' : '（可选）'}${row.hint === undefined ? '' : ` · ${row.hint}`}`
+}
+
+function providerSettingsAddress(wizard: TuiProviderWizard): string {
+  const path = wizard.kind === 'custom'
+    ? [...wizard.settingsPath, wizard.providerId].filter(Boolean)
+    : wizard.settingsPath
+  return `${wizard.namespace}${path.length === 0 ? '' : `/${path.join('/')}`}`
+}
+
+/** Pi-style flow: one focused prompt at a time, then a compact review. */
+function wizardRowsForView(wizard: TuiProviderWizard): SelectItem[] {
+  if (wizard.step === 'api') {
+    return wizard.protocols.map((protocol, index) => ({
+      value: String(index), label: protocol,
+      description: protocol === wizard.api ? '默认' : undefined,
+    }))
+  }
+  if (wizard.step === 'review') {
+    const failure = providerSetupValidation(wizard)
+    return [
+      {
+        value: '0', label: ansi.bold(wizard.busy ? '⏳ 正在保存…' : '✅ 保存 Provider'),
+        description: failure === undefined ? ansi.dim(`写入 ${providerSettingsAddress(wizard)}`) : ansi.yellow(failure),
+      },
+      { value: '1', label: '修改模型', description: '手工调整模型 ID，或重新自动探测' },
+    ]
+  }
+  return []
+}
+
+interface ProviderWizardActions {
+  choose(row: number): void
+  submitValue(field: ProviderSetupField, text: string): void
+  cancel(): void
+}
+
 export interface TerminalViewActions {
   choosePicker(value: string): void
   closePicker(): void
@@ -550,6 +792,10 @@ export interface TerminalViewActions {
   cancelQuestionRequest(): void
   editQuestion(index: number): void
   confirmQuestionAnswers(): void
+  chooseProviderWizardRow(row: number): void
+  submitProviderWizardValue(field: ProviderSetupField, text: string): void
+  cancelProviderWizard(): void
+  backProviderWizardToMenu(): void
 }
 
 /** Retained pi-tui layout whose components observe immutable controller snapshots. */
@@ -571,6 +817,8 @@ export class TerminalView {
   private readonly questionEditorBox: PromptEditor
   private readonly questionPicker: QuestionPicker
   private readonly questionReview: QuestionReview
+  private readonly providerWizardPicker: ProviderWizardPicker
+  private readonly providerSearchPicker: ProviderSearchPicker
   private questionReviewing = false
   private questionAnswers: AskUserQuestionAnswerItem[] = []
   private pickerSignature = ''
@@ -582,6 +830,15 @@ export class TerminalView {
     this.questionEditor = new Editor(tui, editorTheme, { paddingX: 0 })
     this.editorBox = new PromptEditor(this.editor)
     this.questionEditorBox = new PromptEditor(this.questionEditor)
+    this.providerWizardPicker = new ProviderWizardPicker(tui, {
+      choose: row => this.actions.chooseProviderWizardRow(row),
+      submitValue: (row, text) => this.actions.submitProviderWizardValue(row, text),
+      cancel: () => this.actions.cancelProviderWizard(),
+    })
+    this.providerSearchPicker = new ProviderSearchPicker(
+      value => this.actions.choosePicker(value),
+      () => this.actions.closePicker(),
+    )
     this.questionPicker = new QuestionPicker(tui, {
       chooseOption: label => this.actions.chooseQuestionOption(label),
       submitCustom: text => this.actions.submitQuestionCustom(text),
@@ -638,6 +895,20 @@ export class TerminalView {
   }
 
   private updateComposer(questionIndex: number, questionSubmitting: boolean): void {
+    const wizard = this.state.providerWizard
+    if (wizard !== undefined) {
+      this.pickerSignature = ''
+      this.picker = undefined
+      this.providerWizardPicker.update(wizard, wizard.editing)
+      this.composer.set([
+        new Text(ansi.magenta(ansi.bold(wizard.kind === 'custom'
+          ? '添加自定义 Provider'
+          : `配置 ${wizard.providerId}`)), 1, 0),
+        ...(wizard.error === undefined ? [] : [new Text(ansi.red(`错误：${wizard.error}`), 1, 0)]),
+        this.providerWizardPicker,
+      ], this.providerWizardPicker)
+      return
+    }
     const interaction = this.state.interaction
     if (interaction?.kind === 'approval') {
       this.pickerSignature = ''
@@ -689,6 +960,16 @@ export class TerminalView {
     }
     this.editor.disableSubmit = false
     const picker = this.state.picker
+    if (picker?.kind === 'provider-setup') {
+      this.pickerSignature = ''
+      this.picker = undefined
+      this.providerSearchPicker.update(picker)
+      this.composer.set([
+        new Text(ansi.magenta(ansi.bold('选择要配置的 Provider')), 1, 0),
+        this.providerSearchPicker,
+      ], this.providerSearchPicker)
+      return
+    }
     if (picker !== undefined) {
       const signature = `${picker.kind}\u0000${picker.title}\u0000${picker.current ?? ''}\u0000${picker.items.map(item => `${item.value}\u0001${item.label}\u0001${item.description ?? ''}`).join('\u0002')}`
       if (signature !== this.pickerSignature) {

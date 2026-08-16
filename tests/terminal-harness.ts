@@ -2,6 +2,7 @@ import { Terminal as HeadlessTerminal } from '@xterm/headless'
 import type { Terminal } from '@earendil-works/pi-tui'
 import type { TuiController } from '../src/controller.ts'
 import { createInitialState, type TuiViewState } from '../src/model.ts'
+import type { ProviderSetupField } from '../src/provider-setup.ts'
 
 /** pi-tui terminal adapter backed by xterm's real parser and screen buffers. */
 export class TestTerminal implements Terminal {
@@ -87,10 +88,14 @@ export class TestController {
   readonly pickerValues: string[] = []
   readonly approvals: string[] = []
   readonly questionAnswers: unknown[] = []
+  readonly wizardRows: number[] = []
+  readonly wizardValues: Array<{ row: ProviderSetupField; text: string }> = []
   cancelCount = 0
   cancelQuestionCount = 0
   closePickerCount = 0
   closeOverlayCount = 0
+  cancelWizardCount = 0
+  backWizardCount = 0
   startCount = 0
   disposeCount = 0
   toggleFoldCount = 0
@@ -131,6 +136,10 @@ export class TestController {
     return this.answerQuestionResult
   }
   async cancelQuestion(): Promise<void> { this.cancelQuestionCount += 1 }
+  chooseProviderWizardRow(row: number): void { this.wizardRows.push(row) }
+  submitProviderWizardValue(row: ProviderSetupField, text: string): void { this.wizardValues.push({ row, text }) }
+  cancelProviderWizard(): void { this.cancelWizardCount += 1 }
+  backProviderWizardToMenu(): void { this.backWizardCount += 1 }
   toggleFold(): void { this.toggleFoldCount += 1 }
   dispose(): void { this.disposeCount += 1 }
 

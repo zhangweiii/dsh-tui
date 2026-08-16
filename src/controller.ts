@@ -19,9 +19,14 @@ import type { ApprovalOutcome } from '@deepseek-ai/dsh-user-approval/types'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import type { TuiStartupValues } from './startup.ts'
 import {
+  commitProviderSetup, createProviderSetupDraft, CUSTOM_PROVIDER_VALUE, discoverProviderSetupModels,
+  editProviderSetup, loadProviderSetupCatalog, parseProviderAddArgs as parseProviderSetupArgs, providerSetupFieldError,
+  type ProviderSetupCatalog, type ProviderSetupField,
+} from './provider-setup.ts'
+import {
   applyHistory, applyHostFrame, applyMuxFrame, contentText, createInitialState, toggleFold,
   type PendingApproval, type PendingQuestion, projectedTitle, projectionStatus, type TuiPicker,
-  type TuiViewState,
+  type TuiPickerItem, type TuiProviderWizard, type TuiViewState,
 } from './model.ts'
 
 type Listener = () => void
@@ -74,12 +79,19 @@ interface JobKillClient {
 }
 
 /** Host-only capabilities whose transports intentionally sit outside IApiClient. */
+/** Local Host-only permission switch, mirroring `/jobs`: resolves the live agent from the session id. */
+export interface PermissionSwitchClient {
+  /** Switch `sessionId` to the named permission preset; returns a user-facing summary. */
+  set(sessionId: SessionId, preset: string): Promise<string>
+}
+
 export interface TuiHostExtensions {
   feedback?: MessageFeedbackClient
   downloads?: DownloadsApi
   cordis?: TuiCordisClient
   plugins?: TuiPluginInventoryClient
   jobs?: JobKillClient
+  permission?: PermissionSwitchClient
 }
 
 type TuiTarget =
@@ -221,6 +233,8 @@ export class TuiController {
   private hasMoreHistory = false
   private historyResyncing = false
   private modelGroups: ModelProviderGroup[] = []
+  /** Snapshot captured when the provider picker opened; one Host join per flow. */
+  private providerSetupCatalog: ProviderSetupCatalog | undefined
 
   /**
    * @param api - Payload-direct client over the in-process ApiProxy fetch carrier.
@@ -719,8 +733,10 @@ export class TuiController {
       switch (picker.kind) {
         case 'directory': await this.commandDirectories(value); break
         case 'model': await this.commandModel(value, undefined); break
+        case 'permission': await this.commandPermission(value); break
         case 'preset': await this.commandPreset(value); break
         case 'provider': await this.commandProviderModels(value); break
+        case 'provider-setup': this.startProviderWizard(value); break
         case 'session': await this.commandResume(value); break
         case 'settings': await this.commandSettingsShow(value); break
         case 'subagent': await this.commandSubagent(value); break
@@ -1269,6 +1285,203 @@ export class TuiController {
     )))
   }
 
+  /** Open one provider flow from the Host's directory/settings/credential facts. */
+  private async commandProviderAdd(input: string): Promise<void> {
+    const catalog = await loadProviderSetupCatalog(this.api)
+    if (!catalog.writable) throw new Error('当前 settings provider 只读')
+    this.providerSetupCatalog = catalog
+    const explicit = parseProviderSetupArgs(input)
+    if (explicit.providerId !== '') {
+      let draft = createProviderSetupDraft(catalog, CUSTOM_PROVIDER_VALUE)
+      draft = editProviderSetup(draft, 'providerId', explicit.providerId)
+      if (explicit.displayName !== undefined) draft = editProviderSetup(draft, 'displayName', explicit.displayName)
+      if (explicit.baseURL !== undefined) draft = editProviderSetup(draft, 'baseURL', explicit.baseURL)
+      if (explicit.api !== undefined) draft = editProviderSetup(draft, 'api', explicit.api)
+      if (explicit.models.length > 0) draft = editProviderSetup(draft, 'models', explicit.models.join(','))
+      if (explicit.keyEnvironment !== undefined) {
+        const secret = process.env[explicit.keyEnvironment]
+        if (secret === undefined || secret === '') throw new Error(`环境变量 ${explicit.keyEnvironment} 未设置或为空`)
+        draft = editProviderSetup(draft, 'apiKey', secret)
+      }
+      if (explicit.discover) draft = await discoverProviderSetupModels(this.api, draft)
+      const committed = await commitProviderSetup(this.api, draft)
+      if (!committed.done) throw new Error(committed.draft.error ?? 'provider 写入失败')
+      this.providerSetupCatalog = undefined
+      this.setNotice(committed.notice ?? `已新增 provider ${explicit.providerId}`)
+      return
+    }
+    const items: TuiPickerItem[] = catalog.targets.map(({ entry, credential }) => ({
+      value: entry.provider,
+      label: entry.declared === true ? `${entry.displayName}（自定义）` : entry.displayName,
+      description: `${entry.active ? '可用' : '未激活'} · ${credential === undefined ? '密钥状态未知' : credential.configured ? '密钥已配置' : '密钥未配置'} · ${entry.provider}`,
+    }))
+    if (catalog.customNamespace !== undefined && catalog.customProtocols.length > 0) {
+      items.push({ value: CUSTOM_PROVIDER_VALUE, label: '➕ 添加自定义 Provider', description: '由 llm-pi-ai 创建 endpoint、协议与模型' })
+    }
+    if (items.length === 0) throw new Error('当前 Host 没有可配置的 provider')
+    this.showPicker({ kind: 'provider-setup', title: '配置 Provider', current: undefined, items })
+  }
+
+  private startProviderWizard(picked: string): void {
+    const catalog = this.providerSetupCatalog
+    if (catalog === undefined) throw new Error('provider 配置目录已失效，请重新运行 /provider-add')
+    const draft = createProviderSetupDraft(catalog, picked)
+    const wizard: TuiProviderWizard = draft.kind === 'custom'
+      ? { ...draft, step: 'providerId', editing: 'providerId' }
+      : draft.supportsCredentialRef
+        ? { ...draft, step: 'credential', editing: 'apiKey' }
+        : { ...draft, step: 'review', editing: undefined }
+    this.update(state => ({ ...state, providerWizard: wizard, picker: undefined, overlay: undefined }))
+  }
+
+  /** Dispatch the small selectors used by the progressive provider flow. */
+  wizardPick(row: number): void {
+    const wizard = this.state.providerWizard
+    if (wizard === undefined || wizard.busy) return
+    if (wizard.step === 'api') {
+      const api = wizard.protocols[row]
+      if (api === undefined) return
+      const next = editProviderSetup(wizard, 'api', api)
+      this.update(state => ({
+        ...state,
+        providerWizard: { ...next, step: 'apiKey', editing: 'apiKey' },
+      }))
+      return
+    }
+    if (wizard.step === 'review') {
+      if (row === 0) void this.confirmProviderWizard()
+      else if (row === 1) this.update(state => ({
+        ...state,
+        providerWizard: { ...wizard, step: 'models', editing: 'models' },
+      }))
+    }
+  }
+
+  /** Advance one focused prompt; existing providers save immediately after the key. */
+  wizardValue(field: ProviderSetupField, text: string): void {
+    const wizard = this.state.providerWizard
+    if (wizard === undefined) return
+    const next = editProviderSetup(wizard, field, text)
+    const fieldError = providerSetupFieldError(next, field)
+    if (fieldError !== undefined) {
+      this.update(state => ({
+        ...state,
+        providerWizard: { ...next, step: wizard.step, editing: field, error: fieldError },
+      }))
+      return
+    }
+    if (wizard.kind === 'existing') {
+      if (next.apiKey === '') {
+        this.update(state => ({
+          ...state,
+          providerWizard: { ...next, step: 'credential', editing: 'apiKey', error: 'API Key 不能为空' },
+        }))
+        return
+      }
+      void this.confirmProviderWizard({ ...next, step: 'credential', editing: undefined })
+      return
+    }
+    switch (field) {
+      case 'providerId':
+        this.update(state => ({ ...state, providerWizard: { ...next, step: 'baseURL', editing: 'baseURL' } }))
+        return
+      case 'baseURL':
+        this.update(state => ({ ...state, providerWizard: { ...next, step: 'api', editing: undefined } }))
+        return
+      case 'apiKey':
+        this.update(state => ({ ...state, providerWizard: { ...next, step: 'models', editing: 'models' } }))
+        return
+      case 'models':
+        if (next.models.length === 0) void this.discoverProviderWizardModels({ ...next, step: 'models', editing: undefined })
+        else this.update(state => ({ ...state, providerWizard: { ...next, step: 'review', editing: undefined } }))
+        return
+      default:
+        return
+    }
+  }
+
+  private async discoverProviderWizardModels(wizard = this.state.providerWizard): Promise<void> {
+    if (wizard === undefined) return
+    this.update(state => ({ ...state, providerWizard: { ...wizard, busy: true, error: undefined } }))
+    try {
+      const next = await discoverProviderSetupModels(this.api, wizard)
+      this.update(state => ({
+        ...state,
+        providerWizard: {
+          ...next, step: next.error === undefined ? 'review' : 'models',
+          editing: next.error === undefined ? undefined : 'models',
+        },
+      }))
+    } catch (error) {
+      this.update(state => ({
+        ...state,
+        providerWizard: {
+          ...wizard, step: 'models', editing: 'models', busy: false,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      }))
+    }
+  }
+
+  private async confirmProviderWizard(wizard = this.state.providerWizard): Promise<void> {
+    if (wizard === undefined || wizard.busy) return
+    this.update(state => ({ ...state, providerWizard: { ...wizard, busy: true, error: undefined } }))
+    try {
+      const result = await commitProviderSetup(this.api, wizard)
+      if (!result.done) {
+        this.update(state => ({
+          ...state,
+          providerWizard: {
+            ...result.draft,
+            step: wizard.kind === 'existing' ? 'credential' : 'review',
+            editing: wizard.kind === 'existing' ? 'apiKey' : undefined,
+          },
+        }))
+        return
+      }
+      this.providerSetupCatalog = undefined
+      this.update(state => ({ ...state, providerWizard: undefined, notice: result.notice }))
+    } catch (error) {
+      this.update(state => ({
+        ...state,
+        providerWizard: { ...wizard, busy: false, error: error instanceof Error ? error.message : String(error) },
+      }))
+    }
+  }
+
+  /** Close the provider wizard without writing. */
+  cancelProviderWizard(): void {
+    const wizard = this.state.providerWizard
+    this.providerSetupCatalog = undefined
+    this.update(state => ({
+      ...state,
+      providerWizard: undefined,
+      ...(wizard?.committed === true && wizard.apiKey !== ''
+        ? { notice: `Provider ${wizard.providerId} 配置已写入，但 API Key 尚未保存` }
+        : {}),
+    }))
+  }
+
+  /** Public hook for choosing/confirming a wizard menu row from the view. */
+  chooseProviderWizardRow(row: number): void {
+    void this.wizardPick(row)
+  }
+
+  /** Public hook for committing an inline wizard field value from the view. */
+  submitProviderWizardValue(field: ProviderSetupField, text: string): void {
+    this.wizardValue(field, text)
+  }
+
+  /** Public hook for submitting the completed wizard. */
+  confirmProviderWizardPublic(): void {
+    void this.confirmProviderWizard()
+  }
+
+  /** Pi-style prompt cancellation closes the provider flow. */
+  backProviderWizardToMenu(): void {
+    this.cancelProviderWizard()
+  }
+
   private async commandCredentials(input: string): Promise<void> {
     const refs = input.split(/\s+/).filter(Boolean)
     if (refs.length === 0) throw new Error('用法：/credentials <REF> [REF...]')
@@ -1527,6 +1740,60 @@ export class TuiController {
     ])
   }
 
+  /**
+   * Pick or directly switch the permission preset. Without an argument it
+   * opens the `/permission` picker from the live `permissions` projection;
+   * with a preset value it forwards `/permission <preset>` to the Harness,
+   * which owns the actual switching logic.
+   * @param preset - Optional preset value (table key) resolved from the picker.
+   */
+  private async commandPermission(preset: string): Promise<void> {
+    const status = projectionStatus(this.state.projections)
+    const options = status.permissionOptions
+    if (preset === '') {
+      if (options === undefined || options.length === 0) {
+        this.setNotice('当前 session 未组合权限服务，无法切换权限模式')
+        return
+      }
+      if (this.state.sessionId === undefined) throw new Error('当前没有已选中的 session')
+      this.showPicker({
+        kind: 'permission',
+        title: '切换权限模式',
+        current: status.permission,
+        items: options.map(option => ({
+          value: option.value,
+          label: option.name,
+          ...(option.description === undefined ? {} : { description: option.description }),
+        })),
+      })
+      return
+    }
+    const current = status.permission
+    if (preset === current) {
+      this.closePicker()
+      this.setNotice(`当前已是权限模式 ${preset}`)
+      return
+    }
+    // Prefer the local Host's permission service when the TUI runs in-process
+    // (the same capability surfaced by the `/permission` command): switching
+    // directly is independent of the Host's slash-command prompt routing and
+    // reliably updates the `permissions` projection. When connected to a
+    // remote Web Host, fall back to forwarding `/permission <preset>` through
+    // the session prompt, which the Host routes to the command registry.
+    this.closePicker()
+    const switchClient = this.extensions.permission
+    if (switchClient !== undefined) {
+      try {
+        this.setNotice(await switchClient.set(this.selectedSessionId(), preset))
+      } catch (error) {
+        this.setNotice(`权限切换失败：${message(error)}`)
+      }
+      return
+    }
+    const accepted = await this.send(`/permission ${preset}`)
+    if (!accepted) this.setNotice(`权限切换失败：发送 /permission ${preset} 未成功`)
+  }
+
   private commandStatus(): void {
     const status = projectionStatus(this.state.projections)
     const lines = [
@@ -1574,10 +1841,11 @@ export class TuiController {
       '/workspace-session-move', '/archive', '/skills', '/subagents', '/subagent', '/back',
       '/settings', '/settings-show', '/settings-open', '/settings-set', '/settings-unset', '/settings-reset',
       '/goal-show', '/goal-edit', '/goal-pause', '/goal-resume', '/goal-complete', '/goal-clear',
-      '/providers', '/provider-models', '/discover-models', '/credentials', '/credential-set', '/credential-unset',
+      '/providers', '/provider-models', '/discover-models', '/provider-add', '/credentials', '/credential-set', '/credential-unset',
       '/directories', '/mkdir', '/open', '/plugins',
       '/cordis', '/cordis-run', '/cordis-stop', '/cordis-remove',
       '/feedback', '/feedback-clear', '/image', '/image-steer', '/save-image', '/export', '/host',
+      '/permission',
     ])
     if (!local.has(command)) return false
     try {
@@ -1603,6 +1871,7 @@ export class TuiController {
             '/goal-show|edit|pause|resume|complete|clear',
             '/providers · /provider-models  方向键选择 provider/model',
             '/discover-models',
+            '/provider-add  使用 Host 目录配置已有 provider，或通过 llm-pi-ai 新增自定义 route',
             '/credentials · /credential-set|unset',
             '/feedback · /feedback-clear',
             '/directories · /mkdir · /open · /plugins',
@@ -1611,7 +1880,8 @@ export class TuiController {
             '/skills · /host · /status',
             'Ctrl+Shift+E  展开最近的折叠行（上下文/skill 目录、工具详情等）；再按展开更早的，全开后按一下重新全部折叠',
             'Ctrl+T        展开/折叠 todo 清单（非折叠时显示进度和当前正在执行的项）',
-            '/goal <objective> · /plan · /permission · /compact  交给 Harness',
+            '/permission          方向键选择权限模式',
+            '/goal <objective> · /plan · /compact  交给 Harness',
             '/close              关闭当前面板',
             '其他 /command       交给 Harness 命令或 skill',
           ])
@@ -1682,6 +1952,7 @@ export class TuiController {
         case '/providers': await this.commandProviders(); break
         case '/provider-models': await this.commandProviderModels(rest); break
         case '/discover-models': await this.commandDiscoverModels(rest); break
+        case '/provider-add': await this.commandProviderAdd(rest); break
         case '/credentials': await this.commandCredentials(rest); break
         case '/credential-set': await this.commandCredentialSet(rest); break
         case '/credential-unset': await this.commandCredentialUnset(rest); break
@@ -1700,6 +1971,7 @@ export class TuiController {
         case '/save-image': await this.commandSaveImage(rest); break
         case '/export': await this.commandExport(rest); break
         case '/host': await this.commandHost(); break
+        case '/permission': await this.commandPermission(rest); break
       }
     } catch (error) {
       this.setNotice(`命令失败：${message(error)}`)

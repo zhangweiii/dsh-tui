@@ -4,6 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
+import Schema from '@deepseek-ai/schemastery'
 import { RpcId, type IApiClient, type MuxFrame, type RpcResponse, type SessionSummary } from '@deepseek-ai/dsh-host-apiproxy'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import { TuiController } from '../src/controller.ts'
@@ -17,6 +18,26 @@ function ok<T>(value: T): Promise<RpcResponse<T>> {
 
 function summary(sessionId = SID, overrides: Partial<SessionSummary> = {}): SessionSummary {
   return { sessionId, updatedAt: 2, running: false, blank: false, cwd: '/work', ...overrides }
+}
+
+function providerSchema(): unknown {
+  const model = Schema.object({ id: Schema.string().required(), name: Schema.string() })
+  const profile = Schema.object({
+    displayName: Schema.string(),
+    apiKeyEnv: Schema.string().role('credential-ref').description('Credential env/ref'),
+    api: Schema.union(['openai-completions', 'anthropic-messages']).description('API protocol'),
+    baseURL: Schema.string().description('Base URL'),
+    models: Schema.array(model),
+  })
+  const s = Schema.object({ providers: Schema.dict(profile).default({}) })
+  return (s as unknown as { toJSON(): unknown }).toJSON()
+}
+
+function deepseekProviderSchema(): unknown {
+  return Schema.object({
+    apiKeyEnv: Schema.string().role('credential-ref').default('DEEPSEEK_API_KEY'),
+    baseURL: Schema.string(),
+  }).toJSON()
 }
 
 function fakeApi(options: {
@@ -42,6 +63,7 @@ function fakeApi(options: {
   goalPause: ReturnType<typeof vi.fn>
   credentialSet: ReturnType<typeof vi.fn>
   selectModel: ReturnType<typeof vi.fn>
+  discoverModelsMock: ReturnType<typeof vi.fn>
 } {
   let lists = 0
   const create = vi.fn(() => ok({ sessionId: SID, agentPreset: 'standard' }))
@@ -69,6 +91,7 @@ function fakeApi(options: {
   const subagentPrompt = vi.fn(() => ok({ messageId: 'subagent-message' }))
   const goalPause = vi.fn(() => ok({ ref: { id: 'goal-1', revision: 2 } }))
   const credentialSet = vi.fn(() => ok({}))
+  const discoverModelsMock = vi.fn(() => ok({ models: [{ id: 'deepseek-chat', name: 'Chat' }] }))
   const selectModel = vi.fn((request: { provider: string; model: string; reasoningEffort?: string }) => ok({
     selected: {
       provider: request.provider, model: request.model,
@@ -100,7 +123,13 @@ function fakeApi(options: {
           goal: { id: 'goal-1', revision: 1, objective: '完成 TUI', phase: 'active', maxGoalRounds: 3 },
           roundsStarted: 0, createdAt: 1, updatedAt: 1,
         },
-        permissions: { options: [], currentValue: 'workspace-write' },
+        permissions: {
+          options: [
+            { value: 'workspace-write', name: 'workspace-write', description: 'Write inside the workspace; wider retries require approval.' },
+            { value: 'danger-full-access', name: 'danger-full-access', description: 'Full file access without approval prompts.' },
+          ],
+          currentValue: 'workspace-write',
+        },
         plan: { active: true, pending: false },
         contextPressure: { projectedTokens: 24_000, contextWindow: 120_000 },
         contextBreakdown: { systemTokens: 1000, toolsTokens: 2000, messageTokens: 3000 },
@@ -242,7 +271,18 @@ function fakeApi(options: {
       describe: vi.fn(() => ok({
         writable: true,
         hasDocument: true,
-        namespaces: [{ ns: 'agent-loop', schema: {}, value: {}, applies: 'live' as const, secrets: [], revision: 4 }],
+        namespaces: [
+          { ns: 'agent-loop', schema: {}, value: {}, applies: 'live' as const, secrets: [], revision: 4 },
+          {
+            ns: 'llm-deepseek', schema: deepseekProviderSchema(),
+            value: { apiKeyEnv: 'DEEPSEEK_API_KEY', baseURL: 'https://api.deepseek.com' },
+            applies: 'live' as const, secrets: [], revision: 6,
+          },
+          {
+            ns: 'llm-pi-ai', schema: providerSchema(), value: { providers: {} },
+            applies: 'live' as const, secrets: [], revision: 8,
+          },
+        ],
       })),
       openDocument: vi.fn(() => ok({ opened: true as const })),
       mutate: settingsMutate,
@@ -268,7 +308,7 @@ function fakeApi(options: {
         }],
         failures: [],
       })),
-      discoverModels: vi.fn(() => ok({ models: [{ id: 'deepseek-chat', name: 'Chat' }] })),
+      discoverModels: discoverModelsMock,
     },
     credentials: {
       describe: vi.fn((request: { refs: string[] }) => ok({
@@ -282,6 +322,7 @@ function fakeApi(options: {
   return {
     api, create, prompt, cancel, respond, history, updateQueue,
     workspaceRename, workspaceCreate, workspaceDelete, settingsMutate, subagentPrompt, goalPause, credentialSet, selectModel,
+    discoverModelsMock,
   }
 }
 
@@ -517,12 +558,30 @@ describe('TuiController', () => {
     expect(controller.getSnapshot().picker).toBeUndefined()
     await controller.submit('/model deepseek/reasoner high')
     expect(controller.getSnapshot().model).toBe('deepseek/reasoner')
+    await controller.submit('/permission')
+    expect(controller.getSnapshot().picker).toMatchObject({
+      kind: 'permission', current: 'workspace-write',
+      items: [{ value: 'workspace-write' }, { value: 'danger-full-access' }],
+    })
+    await controller.choosePicker('danger-full-access')
+    expect(fake.prompt).toHaveBeenLastCalledWith(expect.objectContaining({
+      sessionId: SID, content: [{ type: 'text', text: '/permission danger-full-access' }],
+    }))
+    expect(controller.getSnapshot().picker).toBeUndefined()
+    await controller.submit('/permission')
+    expect(controller.getSnapshot().picker).toMatchObject({ kind: 'permission', current: 'workspace-write' })
+    await controller.choosePicker('workspace-write')
+    expect(fake.prompt).not.toHaveBeenCalledWith(expect.objectContaining({
+      content: [{ type: 'text', text: '/permission workspace-write' }],
+    }))
+    expect(controller.getSnapshot().picker).toBeUndefined()
     await controller.submit('/skills')
     expect(controller.getSnapshot().overlay?.lines[0]).toContain('/review')
     await controller.submit('/settings')
-    expect(controller.getSnapshot().picker).toMatchObject({
-      kind: 'settings', items: [{ value: 'agent-loop' }],
-    })
+    const settingsItems = controller.getSnapshot().picker?.items.map(item => item.value)
+    expect(controller.getSnapshot().picker).toMatchObject({ kind: 'settings' })
+    expect(settingsItems).toContain('agent-loop')
+    expect(settingsItems).toContain('llm-deepseek')
     await controller.choosePicker('agent-loop')
     expect(controller.getSnapshot().overlay?.title).toBe('Settings · agent-loop')
     await controller.submit('/settings-show agent-loop --schema')
@@ -541,6 +600,32 @@ describe('TuiController', () => {
     expect(fake.prompt).toHaveBeenCalledWith(expect.objectContaining({
       sessionId: SID, content: [{ type: 'text', text: '/compact' }],
     }))
+    controller.dispose()
+  })
+
+  it('switches permission through the local Host extension instead of forwarding chat', async () => {
+    const fake = fakeApi({ items: [summary()] })
+    const permission = vi.fn<(_id: SessionId, preset: string) => Promise<string>>(
+      async (_id, preset) => `权限模式已切换为 ${preset}`,
+    )
+    const controller = new TuiController(fake.api, { permission: { set: permission } })
+    await controller.start({ continueLatest: false, resume: SID })
+
+    await controller.submit('/permission danger-full-access')
+    expect(permission).toHaveBeenCalledWith(SID, 'danger-full-access')
+    // The local extension switch must not fall through to a model prompt.
+    expect(fake.prompt).not.toHaveBeenCalledWith(expect.objectContaining({
+      content: [{ type: 'text', text: '/permission danger-full-access' }],
+    }))
+    expect(controller.getSnapshot().picker).toBeUndefined()
+
+    // A preset that is already current short-circuits and never calls set.
+    permission.mockClear()
+    await controller.submit('/permission')
+    expect(controller.getSnapshot().picker).toMatchObject({ kind: 'permission', current: 'workspace-write' })
+    await controller.choosePicker('workspace-write')
+    expect(permission).not.toHaveBeenCalled()
+    expect(controller.getSnapshot().picker).toBeUndefined()
     controller.dispose()
   })
 
@@ -696,6 +781,154 @@ describe('TuiController', () => {
       if (previousSecret === undefined) delete process.env.DSH_TUI_TEST_SECRET
       else process.env.DSH_TUI_TEST_SECRET = previousSecret
     }
+    controller.dispose()
+  })
+
+  it('adds a custom provider via the /provider-add fast path (provider-id + flags)', async () => {
+    const fake = fakeApi({ items: [summary()] })
+    const controller = new TuiController(fake.api)
+    await controller.start({ continueLatest: false, resume: SID })
+
+    const previousSecret = process.env.DSH_TUI_TEST_SECRET
+    process.env.DSH_TUI_TEST_SECRET = 'sk-test'
+    const previousKey = process.env.GATEWAY_API_KEY
+    process.env.GATEWAY_API_KEY = 'gw-secret'
+    try {
+      await controller.submit(
+        '/provider-add my-gateway --base-url https://gateway.example/v1 --api openai-completions --key-env GATEWAY_API_KEY --discover',
+      )
+    } finally {
+      if (previousKey === undefined) delete process.env.GATEWAY_API_KEY
+      else process.env.GATEWAY_API_KEY = previousKey
+      if (previousSecret === undefined) delete process.env.DSH_TUI_TEST_SECRET
+      else process.env.DSH_TUI_TEST_SECRET = previousSecret
+    }
+
+    expect(fake.discoverModelsMock).toHaveBeenCalledWith(expect.objectContaining({
+      settingsNs: 'llm-pi-ai', baseURL: 'https://gateway.example/v1', api: 'openai-completions', apiKey: 'gw-secret',
+    }))
+    expect(fake.settingsMutate).toHaveBeenCalledWith({
+      ns: 'llm-pi-ai',
+      ops: [{
+        op: 'set',
+        path: ['providers', 'my-gateway'],
+        value: {
+          baseURL: 'https://gateway.example/v1',
+          api: 'openai-completions',
+          apiKeyEnv: 'MY_GATEWAY_API_KEY',
+          models: [{ id: 'deepseek-chat', name: 'Chat' }],
+        },
+      }],
+      expectedRevision: 8,
+    })
+    expect(fake.credentialSet).toHaveBeenCalledWith({ ref: 'MY_GATEWAY_API_KEY', value: 'gw-secret' })
+    expect(controller.getSnapshot().notice).toContain('my-gateway')
+    controller.dispose()
+  })
+
+  it('rejects an unknown flag on /provider-add and does not write', async () => {
+    const fake = fakeApi({ items: [summary()] })
+    const controller = new TuiController(fake.api)
+    await controller.start({ continueLatest: false, resume: SID })
+
+    await controller.submit('/provider-add my-gateway --bogus 1')
+    expect(fake.settingsMutate).not.toHaveBeenCalled()
+    expect(controller.getSnapshot().notice).toContain('无法识别的参数')
+    controller.dispose()
+  })
+
+  it('interactively adds a custom provider: pick custom, fill fields, fetch models, confirm', async () => {
+    const fake = fakeApi({ items: [summary()] })
+    const controller = new TuiController(fake.api)
+    await controller.start({ continueLatest: false, resume: SID })
+
+    // The entry picker lists installed catalog providers plus a "custom" row.
+    await controller.submit('/provider-add')
+    expect(controller.getSnapshot().picker).toMatchObject({
+      kind: 'provider-setup', items: [
+        expect.objectContaining({ value: 'deepseek', label: 'DeepSeek' }),
+        expect.objectContaining({ label: expect.stringContaining('自定义') }),
+      ],
+    })
+
+    // Pick the custom entry → the wizard opens under the resolved profiles ns.
+    await controller.choosePicker('\u0000custom-provider')
+    const wizard = controller.getSnapshot().providerWizard
+    expect(wizard?.namespace).toBe('llm-pi-ai')
+    expect(wizard?.settingsPath).toEqual(['providers'])
+    expect(wizard?.providerId).toBe('')
+
+    controller.submitProviderWizardValue('providerId', 'my-gateway')
+    controller.submitProviderWizardValue('baseURL', 'https://gateway.example/v1')
+    controller.chooseProviderWizardRow(0) // Host-schema protocol selector
+    controller.submitProviderWizardValue('apiKey', 'sk-test')
+    controller.submitProviderWizardValue('models', '') // blank asks the Host to discover
+
+    await vi.waitFor(() => {
+      expect(controller.getSnapshot().providerWizard).toMatchObject({ step: 'review', candidates: [{ id: 'deepseek-chat' }] })
+    })
+    controller.chooseProviderWizardRow(0)
+    await vi.waitFor(() => { expect(fake.settingsMutate).toHaveBeenCalled() })
+
+    expect(fake.discoverModelsMock).toHaveBeenCalledWith(expect.objectContaining({
+      settingsNs: 'llm-pi-ai', baseURL: 'https://gateway.example/v1', api: 'openai-completions', apiKey: 'sk-test',
+    }))
+    expect(fake.settingsMutate).toHaveBeenCalledWith({
+      ns: 'llm-pi-ai',
+      ops: [{
+        op: 'set',
+        path: ['providers', 'my-gateway'],
+        value: {
+          baseURL: 'https://gateway.example/v1',
+          api: 'openai-completions',
+          apiKeyEnv: 'MY_GATEWAY_API_KEY',
+          models: [{ id: 'deepseek-chat', name: 'Chat' }],
+        },
+      }],
+      expectedRevision: 8,
+    })
+    // The typed key value is stored through the credential seam.
+    expect(fake.credentialSet).toHaveBeenCalledWith({ ref: 'MY_GATEWAY_API_KEY', value: 'sk-test' })
+    await vi.waitFor(() => { expect(controller.getSnapshot().providerWizard).toBeUndefined() })
+    expect(controller.getSnapshot().notice).toContain('my-gateway')
+    expect(controller.getSnapshot().notice).not.toContain('sk-test')
+    controller.dispose()
+  })
+
+  it('configures a catalog provider with one focused API-key prompt', async () => {
+    const fake = fakeApi({ items: [summary()] })
+    const controller = new TuiController(fake.api)
+    await controller.start({ continueLatest: false, resume: SID })
+
+    await controller.submit('/provider-add')
+    // A catalog (non-declared) provider row shows its name, not a namespace.
+    const picker = controller.getSnapshot().picker
+    expect(picker?.kind).toBe('provider-setup')
+    expect(picker?.items[0]).toMatchObject({ value: 'deepseek', label: 'DeepSeek' })
+
+    // Like pi /login: choosing a provider immediately focuses one credential prompt.
+    await controller.choosePicker('deepseek')
+    expect(controller.getSnapshot().providerWizard).toMatchObject({
+      kind: 'existing', providerId: 'deepseek', namespace: 'llm-deepseek',
+      settingsPath: [], credentialRef: 'DEEPSEEK_API_KEY', step: 'credential', editing: 'apiKey',
+    })
+    controller.submitProviderWizardValue('apiKey', 'new-key')
+    await vi.waitFor(() => { expect(controller.getSnapshot().providerWizard).toBeUndefined() })
+    expect(fake.credentialSet).toHaveBeenCalledWith({ ref: 'DEEPSEEK_API_KEY', value: 'new-key' })
+    controller.dispose()
+  })
+
+  it('supports cancelling the provider wizard without writing', async () => {
+    const fake = fakeApi({ items: [summary()] })
+    const controller = new TuiController(fake.api)
+    await controller.start({ continueLatest: false, resume: SID })
+
+    await controller.submit('/provider-add')
+    await controller.choosePicker('\u0000custom-provider')
+    expect(controller.getSnapshot().providerWizard).toBeDefined()
+    controller.cancelProviderWizard()
+    expect(controller.getSnapshot().providerWizard).toBeUndefined()
+    expect(fake.settingsMutate).not.toHaveBeenCalled()
     controller.dispose()
   })
 

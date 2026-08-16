@@ -43,6 +43,8 @@ TUI 自己持有的命令会打开终端原生面板。其他 slash command 仍�
 | `/archive [session-id] --yes`、`/export [path] [--descendants]` | 归档 session，或导出日志及其引用的 media。 |
 | `/models`、`/model [provider/model] [effort]` | 直接选择模型；显式 route 则直接切换。 |
 | `/providers`、`/provider-models [provider]`、`/discover-models <settings-ns> …` | 选择 provider/model，或从 endpoint 发现 model。 |
+| `/provider-add [new-provider-id] [--name <显示名>] [--base-url <url>] [--api <协议>] [--key-env <环境变量>] [--model <id>…] [--discover]` | 采用类似 pi `/login` 的渐进式流程：provider 列表带独立搜索输入；选择已有 provider 后切换到独立的单行 API Key 输入并立即保存；添加自定义 route 时依次询问 ID、endpoint、Host schema 协议、可选 Key 与模型，最后显示紧凑确认。自定义 route 只写入 `llm-pi-ai/providers.<id>`；配置地址来自 Host 的 `settingsNs/settingsPath`，密钥只经 `credentials.set` 单向写入。 |
+| `/permission [preset]` | 上下选择或直接切换权限模式（来自 `permissions` projection 的 preset 表）。 |
 | `/presets`、`/preset [id]`、`/preset-read <id>` | 选择空白 session 的 preset，或查看 preset 内容。 |
 | `/preset-copy <source> <new-id> [name]`、`/preset-open <id>`、`/preset-remove <id> --yes` | 通过共享 preset service 创作或删除用户 preset。 |
 | `/queue`、`/queue-edit <item-id> <text>`、`/queue-steer <item-id>` | 按稳定 id 查看和修改待处理 inbox item。 |
@@ -68,7 +70,7 @@ TUI 自己持有的命令会打开终端原生面板。其他 slash command 仍�
 
 包含空白的路径可以加引号。破坏性命令要求末尾带 `--yes`。导出与图片保存采用仅创建写入，目标文件已存在时拒绝覆盖。`/credential-set` 从指定环境变量读取 secret，因此值不会进入终端命令历史或 transcript。
 
-共享命令 `/goal <objective>`、`/plan`、`/permission` 和 `/compact` 与其他未知 slash command 一样，原样交给 Harness 命令或 skill 路径；它们的持久化生命周期会回到同一个 transcript。
+共享命令 `/goal <objective>`、`/plan` 和 `/compact` 与其他未知 slash command 一样，原样交给 Harness 命令或 skill 路径；它们的持久化生命周期会回到同一个 transcript。`/permission` 由 TUI 本地拦截，打开一个可上下选择的权限模式列表（来自 `permissions` projection），选中后把 `/permission <preset>` 交回 Harness 完成切换。
 
 对话状态来自持久化 history、mux stream 和 Host stream。终端会折叠 assistant 文本与 reasoning、注入的模型上下文、命令与压缩和模型重试生命周期、Host 提供的工具 presentation、作为去重产物行显示的成功 mutation location、持久化 workflow run 及其 member 状态、稳定的 assistant message id、待处理 queue item、后台 job、todo、goal 与其他 projection value、运行状态和实时错误。已完成的 assistant 与 reasoning 文本由 pi-tui `Markdown` 展示标题、强调、列表、引用、代码块、链接和表格；原始 HTML 显示为文本，支持 OSC 8 的终端会把链接显示为可点击链接，流式尾部则保留为紧凑纯文本。界面不再常驻页头；输入区下方的 footer 展示运行状态、agent preset、模型、cwd、会话轮次与步骤、累计 token、上下文占用与权限模式，计划模式仅在开启或切换中时出现；宽度足够时折叠为单行，不足时按均匀宽度拆成两行。输入区上方的紧凑活动栏只在存在未完成 todo 或活跃 goal、queue、job、workflow 时出现。有未完成 todo 时它默认折叠为一行：同一行显示进度计数（已办/总数）、当前正在执行的 todo 与后台任务摘要，按 Ctrl+T 展开成按类别分节的完整清单——「待办」(已完成的标 ✓ 并置灰、正在执行的标 ◆ 高亮、未开始的标 ·) 与「任务（后台）」(运行中 ●、待停 ◌、失败 ✗；已结束的 job 不再占据活动栏) 各占一节，再按一次收回。`/status` 展示完整 projection 构成与图片限制。`ScrollView` 按渲染行约束 transcript，任何长文本都不能覆盖固定的活动栏、编辑器或 footer。产物路径可以直接交给 `/open`；未结束的工具或 workflow 会在其所属 turn 关闭时标记为中断。history/live 边界按 sequence 去重，surface replacement 不会重复渲染压缩 checkpoint；可回答的 approval 与 question frame 会回填原始 RPC identity。
 

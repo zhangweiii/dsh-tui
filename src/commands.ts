@@ -59,6 +59,7 @@ export const TUI_COMMANDS: readonly CommandDescriptor[] = [
   { command: '/providers', description: '选择模型提供方' },
   { command: '/provider-models', description: '选择提供方模型', input: '[provider]' },
   { command: '/discover-models', description: '发现提供方模型', input: '<settings-ns> [provider|-] [base-url|-] [api|-] [api-key-env]' },
+  { command: '/provider-add', description: '通过 Host 配置或新增 provider', input: '[new-provider-id] [--name <显示名>] [--base-url <url>] [--api <协议>] [--key-env <环境变量>] [--model <id>] [--discover]' },
   { command: '/credentials', description: '查看凭据状态', input: '<ref...>' },
   { command: '/credential-set', description: '从环境变量写入凭据', input: '<ref> <env-name>' },
   { command: '/credential-unset', description: '移除凭据', input: '<ref> --yes' },

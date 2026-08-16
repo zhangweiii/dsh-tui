@@ -13,6 +13,7 @@ import type {} from '@deepseek-ai/dsh-commands/types'
 import type {} from '@deepseek-ai/dsh-compaction/types'
 import type {} from '@deepseek-ai/dsh-llm-retry/types'
 import type {} from '@deepseek-ai/dsh-tool-workflow/types'
+import type { ProviderSetupDraft } from './provider-setup.ts'
 
 /** Terminal status shared by tool and workflow rows. */
 export type TranscriptStatus = 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted'
@@ -94,10 +95,19 @@ export interface TuiPickerItem {
 
 /** Modal picker owned by a terminal-native command. */
 export interface TuiPicker {
-  kind: 'directory' | 'model' | 'preset' | 'provider' | 'session' | 'settings' | 'subagent'
+  kind: 'directory' | 'model' | 'permission' | 'preset' | 'provider' | 'provider-setup' | 'session' | 'settings' | 'subagent'
   title: string
   current: string | undefined
   items: TuiPickerItem[]
+}
+
+export type ProviderWizardStep = 'credential' | 'providerId' | 'baseURL' | 'api' | 'apiKey' | 'models' | 'review'
+
+/** Provider configuration draft plus the TUI's progressive prompt position. */
+export type TuiProviderWizard = ProviderSetupDraft & {
+  step: ProviderWizardStep
+  /** Field currently using the focused single-value prompt. */
+  editing?: import('./provider-setup.ts').ProviderSetupField | undefined
 }
 
 /** Complete render state observed by the terminal application. */
@@ -127,6 +137,7 @@ export interface TuiViewState {
   interaction: PendingInteraction | undefined
   overlay: TuiOverlay | undefined
   picker: TuiPicker | undefined
+  providerWizard: TuiProviderWizard | undefined
   notice: string | undefined
   lastSeq: number
   mutationCalls: Record<string, { turn: number; paths: string[] }>
@@ -134,9 +145,18 @@ export interface TuiViewState {
   retryTurns: Record<string, number>
 }
 
+/** One switchable permission preset shown by the `/permission` picker. */
+export interface TuiPermissionOption {
+  value: string
+  name: string
+  description?: string | undefined
+}
+
 /** Readable subset of the Web composer projections shown by the TUI. */
 export interface TuiProjectionStatus {
   permission?: string
+  /** Switchable permission presets from the `permissions` projection. */
+  permissionOptions?: TuiPermissionOption[]
   plan?: { active: boolean; pending: boolean }
   context?: { used: number; window: number; percent: number }
   contextWindow?: number
@@ -176,6 +196,7 @@ export function createInitialState(): TuiViewState {
     interaction: undefined,
     overlay: undefined,
     picker: undefined,
+    providerWizard: undefined,
     notice: undefined,
     lastSeq: -1,
     mutationCalls: {},
@@ -352,6 +373,18 @@ export function projectionStatus(projections: Record<string, unknown>): TuiProje
   const result: TuiProjectionStatus = {}
   const permissions = object(projections.permissions)
   if (typeof permissions?.currentValue === 'string') result.permission = permissions.currentValue
+  if (Array.isArray(permissions?.options)) {
+    const options = permissions.options.flatMap((item: unknown) => {
+      const option = object(item)
+      if (option === undefined || typeof option.value !== 'string' || typeof option.name !== 'string') return []
+      return [{
+        value: option.value,
+        name: option.name,
+        ...(typeof option.description === 'string' ? { description: option.description } : {}),
+      } satisfies TuiPermissionOption]
+    })
+    if (options.length > 0) result.permissionOptions = options
+  }
 
   const plan = object(projections.plan)
   if (typeof plan?.active === 'boolean' && typeof plan.pending === 'boolean') {
