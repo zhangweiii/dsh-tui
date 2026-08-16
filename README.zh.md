@@ -112,4 +112,4 @@ npm version minor                    # 0.2.0 -> 0.3.0        -> npm dist-tag "la
 git push --follow-tags               # 推送的 v* tag 触发发布
 ```
 
-该 workflow 需要仓库配置 `NPM_TOKEN` secret（npm automation token）。本地发布可运行 `npm run release`，同样执行「先测试、再按规则选择 dist-tag 发布」的流程。
+该 workflow 通过 npm [trusted publishing](https://docs.npmjs.com/trusted-publishers)（GitHub OIDC）认证，无需配置任何 token secret。首次手动发布后，在 npmjs.com 的包设置中配置 trusted publisher：仓库填 `zhangweiii/dsh-tui`，workflow 文件填 `release.yml`。本地发布可运行 `npm run release`，同样执行「先测试、再按规则选择 dist-tag 发布」的流程。

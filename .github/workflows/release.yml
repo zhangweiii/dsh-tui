@@ -37,9 +37,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24.x
-          registry-url: https://registry.npmjs.org
           cache: npm
       - run: npm ci
+      # Trusted publishing (OIDC) requires npm >= 11.5.1
+      - run: npm install -g npm@latest
 
       - name: Resolve dist-tag and verify tag matches package.json
         id: meta
@@ -56,7 +57,6 @@ jobs:
           echo "Publishing version ${VERSION}"
 
       - name: Publish to npm
+        # Authenticates via GitHub OIDC trusted publishing (no token needed);
         # npm publish also runs prepare (build) and prepublishOnly (typecheck + tests)
         run: npm publish --tag "${{ steps.meta.outputs.dist_tag }}" --access public --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

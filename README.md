@@ -112,4 +112,4 @@ npm version minor                    # 0.2.0 -> 0.3.0        -> npm dist-tag "la
 git push --follow-tags               # the pushed v* tag triggers the release
 ```
 
-The workflow requires an `NPM_TOKEN` repository secret (an npm automation token). Locally, `npm run release` performs the same check-then-publish flow with the same dist-tag rules.
+The workflow authenticates through npm [trusted publishing](https://docs.npmjs.com/trusted-publishers) (GitHub OIDC) — no token secret is required. Configure the trusted publisher in the package settings on npmjs.com with repository `zhangweiii/dsh-tui` and workflow file `release.yml` after the first manual publish. Locally, `npm run release` performs the same check-then-publish flow with the same dist-tag rules.
