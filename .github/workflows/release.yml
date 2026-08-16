@@ -1,8 +1,8 @@
 name: Release
 
 # Triggered by pushing a version tag that matches package.json, e.g.:
-#   v0.3.0        -> published with the "latest" dist-tag (prod)
-#   v0.3.0-beta.0 -> published with the "beta" dist-tag
+#   v0.3.0        -> npm "latest" + stable GitHub Release
+#   v0.3.0-beta.0 -> npm "beta" + prerelease GitHub Release
 # Create both with `npm version patch|prerelease --preid beta` and `git push --follow-tags`.
 
 on:
@@ -12,17 +12,20 @@ on:
 
 permissions:
   contents: read
-  id-token: write # npm provenance attestation
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   test:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        node-version: [22.19.0, 24.x]
+        node-version: [22.19.0, 24.x, 26.x]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: ${{ matrix.node-version }}
           cache: npm
@@ -32,31 +35,72 @@ jobs:
   publish:
     needs: test
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # npm trusted publishing and provenance
+    outputs:
+      prerelease: ${{ steps.meta.outputs.prerelease }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 24.x
-          cache: npm
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      # Trusted publishing requires npm >= 11.5.1; keep releases reproducible.
+      - run: npm install -g npm@11.12.1
       - run: npm ci
-      # Trusted publishing (OIDC) requires npm >= 11.5.1
-      - run: npm install -g npm@latest
 
-      - name: Resolve dist-tag and verify tag matches package.json
+      - name: Resolve release metadata
         id: meta
         run: |
+          PACKAGE_NAME=$(node -p "require('./package.json').name")
           VERSION=$(node -p "require('./package.json').version")
           if [ "${GITHUB_REF_NAME#v}" != "$VERSION" ]; then
             echo "tag ${GITHUB_REF_NAME} does not match package.json version ${VERSION}" >&2
             exit 1
           fi
           case "$VERSION" in
-            *-*) echo "dist_tag=beta" >> "$GITHUB_OUTPUT" ;;
-            *)   echo "dist_tag=latest" >> "$GITHUB_OUTPUT" ;;
+            *-*)
+              echo "dist_tag=beta" >> "$GITHUB_OUTPUT"
+              echo "prerelease=true" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "dist_tag=latest" >> "$GITHUB_OUTPUT"
+              echo "prerelease=false" >> "$GITHUB_OUTPUT"
+              ;;
           esac
-          echo "Publishing version ${VERSION}"
+          if npm view "${PACKAGE_NAME}@${VERSION}" version >/dev/null 2>&1; then
+            echo "already_published=true" >> "$GITHUB_OUTPUT"
+            echo "${PACKAGE_NAME}@${VERSION} already exists on npm; skipping npm publish"
+          else
+            echo "already_published=false" >> "$GITHUB_OUTPUT"
+            echo "Publishing ${PACKAGE_NAME}@${VERSION}"
+          fi
 
       - name: Publish to npm
+        if: steps.meta.outputs.already_published != 'true'
         # Authenticates via GitHub OIDC trusted publishing (no token needed);
         # npm publish also runs prepare (build) and prepublishOnly (typecheck + tests)
         run: npm publish --tag "${{ steps.meta.outputs.dist_tag }}" --access public --provenance
+
+  github-release:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IS_PRERELEASE: ${{ needs.publish.outputs.prerelease }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "GitHub Release ${GITHUB_REF_NAME} already exists; skipping"
+            exit 0
+          fi
+          args=(--verify-tag --generate-notes --title "$GITHUB_REF_NAME")
+          if [ "$IS_PRERELEASE" = "true" ]; then
+            args+=(--prerelease)
+          fi
+          gh release create "$GITHUB_REF_NAME" "${args[@]}" --repo "$GITHUB_REPOSITORY"

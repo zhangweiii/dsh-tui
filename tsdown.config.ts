@@ -12,6 +12,7 @@ export default defineConfig({
   target: 'es2024',
   dts: true,
   deps: {
+    onlyBundle: ['@deepseek-ai/dsh-llm', '@deepseek-ai/dsh-timeout'],
     dts: { neverBundle: true },
   },
   clean: true,

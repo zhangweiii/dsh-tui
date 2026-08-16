@@ -104,7 +104,7 @@ The terminal does not rewrite the request prefix. Ordinary prompts and Host-auth
 
 ## Releasing
 
-Publishes run through the [Release workflow](.github/workflows/release.yml): pushing a version tag runs the test matrix, then publishes to npm with provenance. The dist-tag follows the version — prerelease versions publish under `beta`, stable versions under `latest`:
+Publishes run through the [Release workflow](.github/workflows/release.yml): pushing a version tag runs the test matrix, publishes to npm with provenance, then creates the matching GitHub Release. The workflow is idempotent: it skips an npm version that already exists and does not recreate an existing GitHub Release. The dist-tag follows the version — prerelease versions publish under `beta`, stable versions under `latest`:
 
 ```sh
 npm version prerelease --preid beta  # 0.2.0 -> 0.2.1-beta.0 -> npm dist-tag "beta"
@@ -112,4 +112,4 @@ npm version minor                    # 0.2.0 -> 0.3.0        -> npm dist-tag "la
 git push --follow-tags               # the pushed v* tag triggers the release
 ```
 
-The workflow authenticates through npm [trusted publishing](https://docs.npmjs.com/trusted-publishers) (GitHub OIDC) — no token secret is required. Configure the trusted publisher in the package settings on npmjs.com with repository `zhangweiii/dsh-tui` and workflow file `release.yml` after the first manual publish. Locally, `npm run release` performs the same check-then-publish flow with the same dist-tag rules.
+The workflow authenticates through npm [trusted publishing](https://docs.npmjs.com/trusted-publishers) (GitHub OIDC) — no token secret is required. In the package settings on npmjs.com, configure GitHub Actions with organization or user `zhangweiii`, repository `dsh-tui`, workflow filename `release.yml`, no environment, and allow the `npm publish` action. Locally, `npm run release` performs the same check-then-publish flow with the same dist-tag rules.
