@@ -408,13 +408,8 @@ describe('pi-tui terminal application', () => {
     })
     await settle(terminal)
     // The single-select question renders as an arrow-navigable menu: Down moves
-    // the highlight to B, Enter confirms it.
-    terminal.send('\u001B[B')
-    terminal.send('\r')
-    await settle(terminal)
-    // Confirming the option moves to the review summary; the "确认提交" row is the
-    // last of two rows, so Down selects it and Enter sends everything.
-    expect(terminal.viewport()).toContain('请确认你的回答')
+    // the highlight to B, Enter confirms it. A one-question batch skips the
+    // review summary and sends the answer to the host right away.
     terminal.send('\u001B[B')
     terminal.send('\r')
     await settle(terminal)
@@ -436,7 +431,7 @@ describe('pi-tui terminal application', () => {
     application.stop()
   })
 
-  it('returns to the confirmation summary after a rejected submission so the user can revise', async () => {
+  it('reopens a single-question batch after a rejected submission so the user can retry', async () => {
     const terminal = new TestTerminal(100, 16)
     const controller = new TestController()
     controller.answerQuestionResult = false
@@ -452,32 +447,18 @@ describe('pi-tui terminal application', () => {
     })
     await settle(terminal)
     // The first option ('快') is highlighted by default, so Enter selects it and
-    // the batch moves to the confirmation summary.
-    terminal.send('\r')
-    await settle(terminal)
-    expect(terminal.viewport()).toContain('请确认你的回答')
-
-    // Confirm is rejected: the summary must return (not a stuck pending state)
-    // so the user can revise their answer.
-    terminal.send('\u001B[B')
+    // — with only one question in the batch — sends the answer right away.
     terminal.send('\r')
     await settle(terminal)
     expect(controller.questionAnswers).toHaveLength(1)
-    expect(terminal.viewport()).toContain('请确认你的回答')
+    expect(controller.questionAnswers[0]).toEqual({ answers: [{ id: 'mode', selected: ['快'] }] })
 
-    // After a rejection the confirm row stays highlighted so retry is one Enter
-    // away; move Up to the question row and choose it to revise the answer.
-    terminal.send('\u001B[A')
-    terminal.send('\r')
-    await settle(terminal)
+    // The submission is rejected: the question must reopen (not a stuck pending
+    // state) so the user can answer again.
     expect(terminal.viewport()).toContain('↑/↓ 选择')
     expect(terminal.viewport()).not.toContain('请确认你的回答')
-    terminal.send('\u001B[B')
-    terminal.send('\r')
-    await settle(terminal)
-    expect(terminal.viewport()).toContain('请确认你的回答')
 
-    // Confirming now succeeds and sends the revised answer.
+    // Answering again with '稳' now succeeds and sends the revised answer.
     controller.answerQuestionResult = true
     terminal.send('\u001B[B')
     terminal.send('\r')
@@ -512,18 +493,13 @@ describe('pi-tui terminal application', () => {
     expect(terminal.viewport()).not.toContain('2. 稳')
 
     // Typing a printable character drops into the custom editor; Enter submits
-    // that text verbatim as the free-text answer, then the confirmation summary
-    // appears with the custom text shown.
+    // that text verbatim as the free-text answer, and a one-question batch is
+    // sent to the host right away.
     terminal.send('o')
     terminal.send('t')
     terminal.send('h')
     terminal.send('e')
     terminal.send('r')
-    terminal.send('\r')
-    await settle(terminal)
-    expect(terminal.viewport()).toContain('请确认你的回答')
-    expect(terminal.viewport()).toContain('other')
-    terminal.send('\u001B[B')
     terminal.send('\r')
     await settle(terminal)
     expect(controller.questionAnswers).toEqual([{ answers: [{ id: 'mode', selected: [], custom: 'other' }] }])
@@ -563,12 +539,8 @@ describe('pi-tui terminal application', () => {
     terminal.send('别的')
     terminal.send('\r')
     await settle(terminal)
-    // The confirmation summary reflects the custom answer before anything is sent.
-    expect(terminal.viewport()).toContain('请确认你的回答')
-    expect(terminal.viewport()).toContain('别的')
-    terminal.send('\u001B[B')
-    terminal.send('\r')
-    await settle(terminal)
+    // A one-question batch skips the confirmation summary: the custom answer is
+    // sent to the host as soon as it is typed.
     expect(controller.questionAnswers).toEqual([{ answers: [{ id: 'mode', selected: [], custom: '别的' }] }])
     application.stop()
   })
@@ -626,12 +598,11 @@ describe('pi-tui terminal application', () => {
     terminal.send('\r')
     await settle(terminal)
     // Both answers typed; the confirmation summary lists every "question → answer"
-    // before the batch is sent. The confirm row is the last of three.
+    // before the batch is sent. The confirm row is the last of three and starts
+    // highlighted, so Enter sends everything.
     expect(terminal.viewport()).toContain('请确认你的回答')
     expect(terminal.viewport()).toContain('随便')
     expect(terminal.viewport()).toContain('一、二')
-    terminal.send('\u001B[B')
-    terminal.send('\u001B[B')
     terminal.send('\r')
     await settle(terminal)
     expect(controller.questionAnswers).toEqual([{
@@ -675,7 +646,10 @@ describe('pi-tui terminal application', () => {
     expect(terminal.viewport()).toContain('备注内容')
     expect(terminal.viewport()).toContain('确认提交全部回答')
 
-    // The first entry is highlighted by default; Enter reopens Q1 to revise it.
+    // The confirm row is highlighted by default; move Up twice to the first
+    // question row and press Enter to reopen Q1 for revision.
+    terminal.send('\u001B[A')
+    terminal.send('\u001B[A')
     terminal.send('\r')
     await settle(terminal)
     expect(terminal.viewport()).toContain('↑/↓ 选择')
@@ -690,9 +664,7 @@ describe('pi-tui terminal application', () => {
     expect(terminal.viewport()).toContain('甲')
     expect(terminal.viewport()).toContain('改后的备注')
 
-    // Confirm the revised batch.
-    terminal.send('\u001B[B')
-    terminal.send('\u001B[B')
+    // Confirm the revised batch; the confirm row starts highlighted again.
     terminal.send('\r')
     await settle(terminal)
     expect(controller.questionAnswers).toEqual([{

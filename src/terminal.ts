@@ -250,12 +250,41 @@ export class TerminalApplication {
       this.tui.requestRender()
       return
     }
+    // A one-question batch has nothing to cross-check in a summary, so it is
+    // sent to the host immediately instead of detouring through the review.
+    if (interaction.questions.length === 1) {
+      await this.submitSingleQuestion()
+      return
+    }
     // Every question is answered: move to the confirmation summary instead of
     // sending immediately, so the user can review "question → answer" and revise
     // any entry before it is committed to the host.
     this.questionReviewing = true
     this.questionSubmitting = false
     this.view.update(this.state, this.questionIndex, true, false, this.questionAnswers)
+    this.tui.requestRender()
+  }
+
+  /** Send the single answered question straight to the host, reopening it on rejection. */
+  private async submitSingleQuestion(): Promise<void> {
+    this.questionSubmitting = true
+    this.view.update(this.state, this.questionIndex, false, true, this.questionAnswers)
+    this.tui.requestRender()
+    const accepted = await this.controller.answerQuestion({ answers: this.questionAnswers })
+    if (this.stopped) return
+    if (accepted) {
+      // Wait for the host `question/resolved` frame; update() clears the
+      // pending state once the interaction is released.
+      return
+    }
+    // The answer was rejected or the transport failed without resolving the
+    // interaction. Reopen the question so the user can answer it again instead
+    // of being stuck on a pending submission.
+    this.questionSubmitting = false
+    this.questionIndex = 0
+    this.questionAnswers = []
+    this.view.questionEditor.setText('')
+    this.view.update(this.state, this.questionIndex, false, false, this.questionAnswers)
     this.tui.requestRender()
   }
 

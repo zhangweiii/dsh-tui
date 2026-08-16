@@ -493,7 +493,8 @@ function formatAnswer(item: AskUserQuestionAnswerItem | undefined): string {
  * The confirmation summary shown after the last question of a batch. Every
  * answered question is listed as "question → your answer"; the user moves the
  * highlight with Up/Down and presses Enter on a question row to revisit it, or
- * on the trailing row to submit the whole batch.
+ * on the trailing row to submit the whole batch. The trailing row starts
+ * highlighted because confirming everything is the common case.
  */
 class QuestionReview implements Component, Focusable {
   private list: SelectList
@@ -520,6 +521,9 @@ class QuestionReview implements Component, Focusable {
     if (this.signature === signature) return
     this.signature = signature
     this.list = new SelectList(rows, 8, selectListTheme)
+    // The confirm row is the likely next step once everything is answered, so
+    // it starts highlighted; question rows are one Up away for revisions.
+    this.list.setSelectedIndex(rows.length - 1)
     this.list.onCancel = () => { this.actions.cancel() }
     this.list.onSelect = item => {
       if (item.value === REVIEW_CONFIRM_VALUE) this.actions.confirm()
