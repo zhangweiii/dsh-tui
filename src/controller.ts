@@ -5,7 +5,7 @@ import { basename, extname, resolve } from 'node:path'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import type {
-  DownloadsApi, GoalRef, HistoryEntry, IApiClient, ModelProviderGroup, PromptContentPart,
+  DownloadsApi, GoalRef, HistoryEntry, IApiClient, ModelProviderGroup, ModelReasoning, PromptContentPart,
   QueuedInboxItem, RpcResponse, SessionSummary, SubagentAddress, WorkspaceId,
 } from '@deepseek-ai/dsh-host-apiproxy'
 import type { AttachmentId, ImageMediaType } from '@deepseek-ai/dsh-attachment'
@@ -674,12 +674,63 @@ export class TuiController {
     )
   }
 
+  /** Adapter-advertised reasoning metadata for one exact `provider/model` route. */
+  private catalogReasoning(route: string): ModelReasoning | undefined {
+    const separator = route.indexOf('/')
+    if (separator <= 0 || separator === route.length - 1) return undefined
+    return this.modelGroups
+      .find(group => group.id === route.slice(0, separator))
+      ?.models.find(item => item.id === route.slice(separator + 1))
+      ?.reasoning
+  }
+
   /** Adapter-advertised default thinking effort for one exact model route. */
   private catalogDefaultEffort(provider: string, model: string): string | undefined {
-    return this.modelGroups
-      .find(group => group.id === provider)
-      ?.models.find(item => item.id === model)
-      ?.reasoning?.defaultEffort
+    return this.catalogReasoning(`${provider}/${model}`)?.defaultEffort
+  }
+
+  /**
+   * Open the thinking-effort picker for one exact `provider/model` route.
+   * @param route - Model route the chosen effort applies to.
+   * @param current - Effort id to highlight; `undefined` highlights the adapter default row.
+   */
+  private showEffortPicker(route: string, current: string | undefined): void {
+    const reasoning = this.catalogReasoning(route)
+    if (reasoning === undefined || reasoning.efforts.length === 0) {
+      throw new Error(`模型 ${route} 不支持设置思考级别`)
+    }
+    const items: TuiPickerItem[] = [
+      {
+        value: '',
+        label: '默认',
+        description: reasoning.defaultEffort === undefined
+          ? '使用提供方默认'
+          : `使用适配器默认 · ${reasoning.defaultEffort}`,
+      },
+      ...reasoning.efforts.map(effort => ({
+        value: effort.id,
+        label: effort.name,
+        ...(effort.description === undefined ? {} : { description: effort.description }),
+      })),
+    ]
+    this.showPicker({
+      kind: 'effort',
+      title: `思考级别 · ${route}`,
+      current: current ?? '',
+      items,
+      context: route,
+    })
+  }
+
+  /** Change the thinking effort of the current model without switching models. */
+  private async commandEffort(): Promise<void> {
+    const route = this.state.model
+    if (route === undefined) throw new Error('当前会话还没有选择模型')
+    if (this.catalogReasoning(route) === undefined) {
+      const models = value(await this.api.sessions.models({ sessionId: this.selectedSessionId() }))
+      this.modelGroups = models.groups
+    }
+    this.showEffortPicker(route, this.state.reasoningEffort)
   }
 
   private async commandModels(): Promise<void> {
@@ -712,14 +763,15 @@ export class TuiController {
       sessionId: this.selectedSessionId(), provider, model,
       ...(effort === undefined ? {} : { reasoningEffort: effort }),
     })).selected
+    const appliedEffort = selected.reasoningEffort ?? this.catalogDefaultEffort(selected.provider, selected.model)
     this.update(state => ({
       ...state,
       model: `${selected.provider}/${selected.model}`,
-      reasoningEffort: selected.reasoningEffort ?? this.catalogDefaultEffort(selected.provider, selected.model),
+      reasoningEffort: appliedEffort,
       overlay: undefined,
       picker: undefined,
     }))
-    this.setNotice(`模型已切换为 ${selected.provider}/${selected.model}`)
+    this.setNotice(`模型已切换为 ${selected.provider}/${selected.model}${appliedEffort === undefined ? '' : ` · ${appliedEffort}`}`)
   }
 
   /**
@@ -732,7 +784,21 @@ export class TuiController {
     try {
       switch (picker.kind) {
         case 'directory': await this.commandDirectories(value); break
-        case 'model': await this.commandModel(value, undefined); break
+        case 'effort': {
+          const route = picker.context
+          if (route === undefined) throw new Error('思考级别选择器缺少模型路由')
+          await this.commandModel(route, value === '' ? undefined : value)
+          break
+        }
+        case 'model': {
+          const reasoning = this.catalogReasoning(value)
+          if (reasoning !== undefined && reasoning.efforts.length > 0) {
+            this.showEffortPicker(value, reasoning.defaultEffort)
+          } else {
+            await this.commandModel(value, undefined)
+          }
+          break
+        }
         case 'permission': await this.commandPermission(value); break
         case 'preset': await this.commandPreset(value); break
         case 'provider': await this.commandProviderModels(value); break
@@ -1244,6 +1310,7 @@ export class TuiController {
 
   private async commandProviderModels(provider = ''): Promise<void> {
     const catalog = value(await this.api.llm.models({}))
+    this.modelGroups = catalog.groups
     const groups = provider === '' ? catalog.groups : catalog.groups.filter(group => group.id === provider)
     const items = groups.flatMap(group => group.models.map(model => ({
       value: `${group.id}/${model.id}`,
@@ -1833,7 +1900,7 @@ export class TuiController {
     const command = rawCommand.toLowerCase()
     const rest = text.trim().slice(rawCommand.length).trim()
     const local = new Set([
-      '/help', '/status', '/close', '/sessions', '/new', '/resume', '/rename', '/fork', '/older', '/models', '/model',
+      '/help', '/status', '/close', '/sessions', '/new', '/resume', '/rename', '/fork', '/older', '/models', '/model', '/effort',
       '/queue', '/queue-edit', '/queue-remove', '/queue-steer',
       '/jobs', '/job-kill',
       '/presets', '/preset', '/preset-read', '/preset-copy', '/preset-open', '/preset-remove',
@@ -1860,6 +1927,7 @@ export class TuiController {
             '/older              加载更早的 100 条消息',
             '/models             方向键选择模型',
             '/model [p/m] [r]    方向键选择或直接切换模型',
+            '/effort             方向键设置当前模型的思考级别',
             '/queue · /queue-edit · /queue-remove · /queue-steer',
             '/jobs · /job-kill <id> --yes  查看/停止后台任务',
             '/presets · /preset  方向键选择或直接切换 preset',
@@ -1914,6 +1982,7 @@ export class TuiController {
         case '/older': await this.commandOlder(); break
         case '/models': await this.commandModels(); break
         case '/model': await this.commandModel(parts[0] ?? '', parts[1]); break
+        case '/effort': await this.commandEffort(); break
         case '/queue': this.commandQueue(); break
         case '/queue-edit': await this.commandQueueEdit(rest); break
         case '/queue-remove': await this.commandQueueRemove(rest); break

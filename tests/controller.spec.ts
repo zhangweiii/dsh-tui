@@ -165,7 +165,16 @@ function fakeApi(options: {
         current: { provider: 'deepseek', model: 'chat' }, routable: true,
         groups: [{
           id: 'deepseek', name: 'DeepSeek',
-          models: [{ id: 'chat', name: 'Chat' }, { id: 'reasoner', name: 'Reasoner' }],
+          models: [
+            { id: 'chat', name: 'Chat' },
+            {
+              id: 'reasoner', name: 'Reasoner',
+              reasoning: {
+                efforts: [{ id: 'low', name: 'Low' }, { id: 'high', name: 'High' }],
+                defaultEffort: 'low',
+              },
+            },
+          ],
         }],
         failures: [],
       })),
@@ -552,10 +561,26 @@ describe('TuiController', () => {
     await controller.submit('/model')
     expect(controller.getSnapshot().picker?.kind).toBe('model')
     await controller.choosePicker('deepseek/reasoner')
+    expect(controller.getSnapshot().picker).toMatchObject({
+      kind: 'effort', current: 'low', context: 'deepseek/reasoner',
+      items: [{ value: '' }, { value: 'low' }, { value: 'high' }],
+    })
+    expect(fake.selectModel).not.toHaveBeenCalled()
+    await controller.choosePicker('high')
+    expect(fake.selectModel).toHaveBeenLastCalledWith({
+      sessionId: SID, provider: 'deepseek', model: 'reasoner', reasoningEffort: 'high',
+    })
+    expect(controller.getSnapshot().picker).toBeUndefined()
+    expect(controller.getSnapshot().reasoningEffort).toBe('high')
+    await controller.submit('/effort')
+    expect(controller.getSnapshot().picker).toMatchObject({
+      kind: 'effort', current: 'high', context: 'deepseek/reasoner',
+    })
+    await controller.choosePicker('')
     expect(fake.selectModel).toHaveBeenLastCalledWith({
       sessionId: SID, provider: 'deepseek', model: 'reasoner',
     })
-    expect(controller.getSnapshot().picker).toBeUndefined()
+    expect(controller.getSnapshot().reasoningEffort).toBe('low')
     await controller.submit('/model deepseek/reasoner high')
     expect(controller.getSnapshot().model).toBe('deepseek/reasoner')
     await controller.submit('/permission')

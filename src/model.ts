@@ -95,10 +95,12 @@ export interface TuiPickerItem {
 
 /** Modal picker owned by a terminal-native command. */
 export interface TuiPicker {
-  kind: 'directory' | 'model' | 'permission' | 'preset' | 'provider' | 'provider-setup' | 'session' | 'settings' | 'subagent'
+  kind: 'directory' | 'effort' | 'model' | 'permission' | 'preset' | 'provider' | 'provider-setup' | 'session' | 'settings' | 'subagent'
   title: string
   current: string | undefined
   items: TuiPickerItem[]
+  /** Opaque routing context owned by the picker kind, e.g. the model route an effort picker applies to. */
+  context?: string | undefined
 }
 
 export type ProviderWizardStep = 'credential' | 'providerId' | 'baseURL' | 'api' | 'apiKey' | 'models' | 'review'

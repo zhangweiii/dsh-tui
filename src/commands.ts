@@ -21,6 +21,7 @@ export const TUI_COMMANDS: readonly CommandDescriptor[] = [
   { command: '/older', description: '加载更早记录' },
   { command: '/models', description: '选择模型' },
   { command: '/model', description: '选择或直接切换模型', input: '[provider/model] [reasoning-effort]' },
+  { command: '/effort', description: '设置当前模型的思考级别' },
   { command: '/queue', description: '查看待处理消息' },
   { command: '/queue-edit', description: '编辑待处理消息', input: '<item-id> <text>' },
   { command: '/queue-remove', description: '删除待处理消息', input: '<item-id> --yes' },
