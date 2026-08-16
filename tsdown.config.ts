@@ -11,8 +11,15 @@ export default defineConfig({
   platform: 'node',
   target: 'es2024',
   dts: true,
+  treeshake: {
+    moduleSideEffects: id => id !== '@deepseek-ai/cordis',
+  },
   deps: {
-    onlyBundle: ['@deepseek-ai/dsh-llm', '@deepseek-ai/dsh-timeout'],
+    onlyBundle: [
+      '@deepseek-ai/dsh-client-schema-form',
+      '@deepseek-ai/dsh-llm',
+      '@deepseek-ai/dsh-timeout',
+    ],
     dts: { neverBundle: true },
   },
   clean: true,
