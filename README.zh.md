@@ -101,3 +101,15 @@ TUI 自己持有的命令会打开终端原生面板。其他 slash command 仍�
 - **部分 Host 本地管理命令仍只支持 standalone 模式**：message feedback、session export、live plugin inventory、dynamic Cordis control 与后台任务停止（/job-kill）刻意位于 `IApiClient` 之外；终端连接 Web Host 时，对应 TUI 命令会报告该能力不可用。聊天、分组、history、model、projection、queue、approval、question、workspace、settings、image、skill、goal 与 subagent 使用远程 Host 约定。
 - **每个终端只选择一个 session**：其他 session 仍可在 Host 上继续运行，但当前进程一次只渲染一个 transcript，并且面板只保留当前可回答 interaction。
 - **`ctx.appExit` 由启动器持有**：在 `dsh` 外部挂载本组合包时，宿主必须提供有界退出请求。
+
+## 发布流程
+
+发布由 [Release workflow](.github/workflows/release.yml) 执行：推送版本 tag 会先跑测试矩阵，然后带 provenance 发布到 npm。dist-tag 由版本号决定——预发布版本进入 `beta`，稳定版本进入 `latest`：
+
+```sh
+npm version prerelease --preid beta  # 0.2.0 -> 0.2.1-beta.0 -> npm dist-tag "beta"
+npm version minor                    # 0.2.0 -> 0.3.0        -> npm dist-tag "latest"
+git push --follow-tags               # 推送的 v* tag 触发发布
+```
+
+该 workflow 需要仓库配置 `NPM_TOKEN` secret（npm automation token）。本地发布可运行 `npm run release`，同样执行「先测试、再按规则选择 dist-tag 发布」的流程。

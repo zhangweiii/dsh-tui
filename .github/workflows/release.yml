@@ -1,0 +1,62 @@
+name: Release
+
+# Triggered by pushing a version tag that matches package.json, e.g.:
+#   v0.3.0        -> published with the "latest" dist-tag (prod)
+#   v0.3.0-beta.0 -> published with the "beta" dist-tag
+# Create both with `npm version patch|prerelease --preid beta` and `git push --follow-tags`.
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+  id-token: write # npm provenance attestation
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [22.19.0, 24.x]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+
+  publish:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.x
+          registry-url: https://registry.npmjs.org
+          cache: npm
+      - run: npm ci
+
+      - name: Resolve dist-tag and verify tag matches package.json
+        id: meta
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          if [ "${GITHUB_REF_NAME#v}" != "$VERSION" ]; then
+            echo "tag ${GITHUB_REF_NAME} does not match package.json version ${VERSION}" >&2
+            exit 1
+          fi
+          case "$VERSION" in
+            *-*) echo "dist_tag=beta" >> "$GITHUB_OUTPUT" ;;
+            *)   echo "dist_tag=latest" >> "$GITHUB_OUTPUT" ;;
+          esac
+          echo "Publishing version ${VERSION}"
+
+      - name: Publish to npm
+        # npm publish also runs prepare (build) and prepublishOnly (typecheck + tests)
+        run: npm publish --tag "${{ steps.meta.outputs.dist_tag }}" --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

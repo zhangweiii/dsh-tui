@@ -65,7 +65,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "prepare": "npm run build",
-    "prepublishOnly": "npm run check"
+    "prepublishOnly": "npm run check",
+    "release": "scripts/publish.sh"
   },
   "dependencies": {
     "@deepseek-ai/dsh-client-schema-form": "^0.1.0-rc.6",

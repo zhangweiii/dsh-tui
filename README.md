@@ -101,3 +101,15 @@ The terminal does not rewrite the request prefix. Ordinary prompts and Host-auth
 - **Some Host-local management commands remain standalone-only** — message feedback, session export, live plugin inventory, dynamic Cordis control, and background-job kill intentionally sit outside `IApiClient`; their TUI commands report that the capability is unavailable when the terminal is connected to a Web Host. Chat, grouping, history, models, projections, queue, approvals, questions, workspaces, settings, images, skills, goals, and subagents use the remote Host contract.
 - **One selected session per terminal** — other sessions continue on the Host, but this process renders one transcript at a time and keeps only the current answerable interaction in its panel.
 - **`ctx.appExit` is launcher-owned** — mounting the bundle outside `dsh` requires the host to provide the bounded exit request.
+
+## Releasing
+
+Publishes run through the [Release workflow](.github/workflows/release.yml): pushing a version tag runs the test matrix, then publishes to npm with provenance. The dist-tag follows the version — prerelease versions publish under `beta`, stable versions under `latest`:
+
+```sh
+npm version prerelease --preid beta  # 0.2.0 -> 0.2.1-beta.0 -> npm dist-tag "beta"
+npm version minor                    # 0.2.0 -> 0.3.0        -> npm dist-tag "latest"
+git push --follow-tags               # the pushed v* tag triggers the release
+```
+
+The workflow requires an `NPM_TOKEN` repository secret (an npm automation token). Locally, `npm run release` performs the same check-then-publish flow with the same dist-tag rules.
