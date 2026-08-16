@@ -1,7 +1,7 @@
 {
   "name": "@zhangweiii/dsh-tui",
   "description": "The interactive terminal profile bundle for DeepSeek Harness",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "author": "zhangweiii",
   "repository": {
     "type": "git",
@@ -62,6 +62,7 @@
   "scripts": {
     "build": "tsdown",
     "check": "npm run typecheck && npm test",
+    "check:package": "npm run build && node scripts/check-package.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "prepare": "npm run build",
@@ -69,7 +70,6 @@
     "release": "scripts/publish.sh"
   },
   "dependencies": {
-    "@deepseek-ai/dsh-client-schema-form": "^0.1.0-rc.6",
     "@deepseek-ai/schemastery": "^3.18.1",
     "@earendil-works/pi-tui": "0.84.2",
     "commander": "^15.0.0"
@@ -96,6 +96,7 @@
     "@deepseek-ai/dsh-atomic-write": "^0.1.0-rc.6",
     "@deepseek-ai/dsh-attachment": "^0.1.0-rc.6",
     "@deepseek-ai/dsh-client-connection": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-client-schema-form": "^0.1.0-rc.6",
     "@deepseek-ai/dsh-cmdline": "^0.1.0-rc.6",
     "@deepseek-ai/dsh-code-runtime": "^0.1.0-rc.6",
     "@deepseek-ai/dsh-code-runtime-worker-thread": "^0.1.0-rc.6",
