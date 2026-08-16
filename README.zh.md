@@ -104,7 +104,7 @@ TUI 自己持有的命令会打开终端原生面板。其他 slash command 仍�
 
 ## 发布流程
 
-发布由 [Release workflow](.github/workflows/release.yml) 执行：推送版本 tag 会先跑测试矩阵，然后带 provenance 发布到 npm。dist-tag 由版本号决定——预发布版本进入 `beta`，稳定版本进入 `latest`：
+发布由 [Release workflow](.github/workflows/release.yml) 执行：推送版本 tag 会先跑测试矩阵、带 provenance 发布到 npm，再创建对应的 GitHub Release。流程可安全重跑：npm 中已存在的版本会跳过，已有的 GitHub Release 也不会重复创建。dist-tag 由版本号决定——预发布版本进入 `beta`，稳定版本进入 `latest`：
 
 ```sh
 npm version prerelease --preid beta  # 0.2.0 -> 0.2.1-beta.0 -> npm dist-tag "beta"
@@ -112,4 +112,4 @@ npm version minor                    # 0.2.0 -> 0.3.0        -> npm dist-tag "la
 git push --follow-tags               # 推送的 v* tag 触发发布
 ```
 
-该 workflow 通过 npm [trusted publishing](https://docs.npmjs.com/trusted-publishers)（GitHub OIDC）认证，无需配置任何 token secret。首次手动发布后，在 npmjs.com 的包设置中配置 trusted publisher：仓库填 `zhangweiii/dsh-tui`，workflow 文件填 `release.yml`。本地发布可运行 `npm run release`，同样执行「先测试、再按规则选择 dist-tag 发布」的流程。
+该 workflow 通过 npm [trusted publishing](https://docs.npmjs.com/trusted-publishers)（GitHub OIDC）认证，无需配置任何 token secret。在 npmjs.com 的包设置中选择 GitHub Actions，并分别填写：组织或用户 `zhangweiii`、仓库 `dsh-tui`、workflow 文件名 `release.yml`、environment 留空、允许操作选择 `npm publish`。本地发布可运行 `npm run release`，同样执行「先测试、再按规则选择 dist-tag 发布」的流程。
