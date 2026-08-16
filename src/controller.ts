@@ -198,6 +198,24 @@ function confirmed(input: string): { confirmed: boolean; rest: string } {
     : { confirmed: true, rest: input.slice(0, match.index).trim() }
 }
 
+/**
+ * Strip one enclosing quote pair when the whole remainder is a single quoted
+ * token; otherwise keep the text verbatim. Lets free-text and path arguments
+ * accept shell-style quoting without eating quotes that appear mid-text.
+ */
+function unquoteWhole(input: string): string {
+  const trimmed = input.trim()
+  if (trimmed === '') return ''
+  const quote = trimmed[0]
+  if (quote !== '"' && quote !== "'") return trimmed
+  try {
+    const parsed = firstArgument(trimmed)
+    return parsed.rest === '' ? parsed.value : trimmed
+  } catch {
+    return trimmed
+  }
+}
+
 function jsonPointer(pointer: string): string[] {
   if (pointer === '') return []
   if (!pointer.startsWith('/')) throw new Error('设置路径必须是 JSON Pointer，例如 /profiles/default/model')
@@ -607,6 +625,10 @@ export class TuiController {
 
   /** Close the terminal-native management panel. */
   closeOverlay(): void {
+    if (this.state.overlay === undefined) {
+      this.setNotice('当前没有打开的面板')
+      return
+    }
     this.update(state => ({ ...state, overlay: undefined }))
   }
 
@@ -663,7 +685,8 @@ export class TuiController {
   }
 
   private async commandNew(cwd: string): Promise<void> {
-    const created = await this.createWorkspaceSession(cwd === '' ? undefined : cwd)
+    const unquoted = unquoteWhole(cwd)
+    const created = await this.createWorkspaceSession(unquoted === '' ? undefined : unquoted)
     const items = await this.refreshSessions()
     const summary = items.find(item => item.sessionId === created.sessionId) ?? freshSummary(created)
     await this.loadSession(summary, items.some(item => item.sessionId === summary.sessionId) ? items : [summary, ...items])
@@ -865,7 +888,7 @@ export class TuiController {
     value(await this.api.sessions.updateQueue({
       sessionId: this.selectedSessionId(),
       itemId: item.id,
-      action: { kind: 'edit', content: [{ type: 'text', text: itemArgument.rest.trim() }] },
+      action: { kind: 'edit', content: [{ type: 'text', text: unquoteWhole(itemArgument.rest) }] },
     }))
     this.setNotice(`已更新 queue item ${item.id}`)
   }
@@ -873,6 +896,7 @@ export class TuiController {
   private async commandQueueRemove(input: string): Promise<void> {
     const confirmation = confirmed(input)
     if (!confirmation.confirmed) throw new Error('删除待处理消息需要追加 --yes')
+    if (confirmation.rest === '') throw new Error('用法：/queue-remove <item-id> --yes')
     const item = this.queueItem(confirmation.rest)
     value(await this.api.sessions.updateQueue({
       sessionId: this.selectedSessionId(), itemId: item.id, action: { kind: 'remove' },
@@ -974,10 +998,12 @@ export class TuiController {
     const copied = value(await this.api.agentPresets.copy({
       from: from.value,
       agentPreset: target.value,
-      ...(target.rest === '' ? {} : { name: target.rest }),
+      ...(target.rest === '' ? {} : { name: unquoteWhole(target.rest) }),
     }))
-    this.setNotice(`已创建用户 preset ${copied.agentPreset}`)
     await this.commandPresets()
+    // Notice after the picker: showPicker clears notices, so setting it first
+    // would hide the only confirmation of the mutation.
+    this.setNotice(`已创建用户 preset ${copied.agentPreset}`)
   }
 
   private async commandPresetOpen(agentPreset: string): Promise<void> {
@@ -990,8 +1016,8 @@ export class TuiController {
     const confirmation = confirmed(input)
     if (!confirmation.confirmed || confirmation.rest === '') throw new Error('删除用户 preset 需要：/preset-remove <id> --yes')
     value(await this.api.agentPresets.remove({ agentPreset: confirmation.rest }))
-    this.setNotice(`已删除用户 preset ${confirmation.rest}`)
     await this.commandPresets()
+    this.setNotice(`已删除用户 preset ${confirmation.rest}`)
   }
 
   private async commandWorkspaces(): Promise<void> {
@@ -1002,10 +1028,11 @@ export class TuiController {
   }
 
   private async commandWorkspaceNew(path: string): Promise<void> {
-    if (path === '') throw new Error('用法：/workspace-new <existing-directory>')
-    const result = value(await this.api.workspace.create({ path }))
-    this.setNotice(`${result.created ? '已创建' : '已存在'} workspace：${result.workspace.title}`)
+    const directory = unquoteWhole(path)
+    if (directory === '') throw new Error('用法：/workspace-new <existing-directory>')
+    const result = value(await this.api.workspace.create({ path: directory }))
     await this.commandWorkspaces()
+    this.setNotice(`${result.created ? '已创建' : '已存在'} workspace：${result.workspace.title}`)
   }
 
   private async commandWorkspaceRename(input: string): Promise<void> {
@@ -1013,10 +1040,10 @@ export class TuiController {
     if (workspace.value === '' || workspace.rest === '') throw new Error('用法：/workspace-rename <workspace-id> <title>')
     const result = value(await this.api.workspace.rename({
       workspaceId: workspace.value as WorkspaceId,
-      title: workspace.rest,
+      title: unquoteWhole(workspace.rest),
     }))
-    this.setNotice(`Workspace 已重命名为 ${result.workspace.title}`)
     await this.commandWorkspaces()
+    this.setNotice(`Workspace 已重命名为 ${result.workspace.title}`)
   }
 
   private async commandWorkspaceDelete(input: string): Promise<void> {
@@ -1025,8 +1052,8 @@ export class TuiController {
       throw new Error('移除 workspace 注册需要：/workspace-delete <workspace-id> --yes（目录和会话日志不会删除）')
     }
     value(await this.api.workspace.delete({ workspaceId: confirmation.rest as WorkspaceId }))
-    this.setNotice(`已移除 workspace 注册 ${confirmation.rest}；目录和会话日志保持不变`)
     await this.commandWorkspaces()
+    this.setNotice(`已移除 workspace 注册 ${confirmation.rest}；目录和会话日志保持不变`)
   }
 
   private async commandWorkspaceMove(input: string): Promise<void> {
@@ -1037,8 +1064,8 @@ export class TuiController {
       workspaceId: workspace.value as WorkspaceId,
       ...(before.value === '' || before.value === 'end' ? {} : { beforeWorkspaceId: before.value as WorkspaceId }),
     }))
-    this.setNotice(`已移动 workspace ${workspace.value}`)
     await this.commandWorkspaces()
+    this.setNotice(`已移动 workspace ${workspace.value}`)
   }
 
   private async commandWorkspaceSessionMove(input: string): Promise<void> {
@@ -1189,7 +1216,12 @@ export class TuiController {
     if (!described.writable) throw new Error('当前 settings provider 只读')
     const current = described.namespaces.find(item => item.ns === namespace.value)
     if (current === undefined) throw new Error(`未知 settings namespace：${namespace.value}`)
-    const parsed: unknown = JSON.parse(path.rest)
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(path.rest)
+    } catch (error) {
+      throw new Error(`JSON 值无效（${message(error)}）；用法：/settings-set <namespace> <json-pointer> <json>`)
+    }
     const updated = value(await this.api.settings.mutate({
       ns: namespace.value,
       ops: [{ op: 'set', path: jsonPointer(path.value), value: parsed }],
@@ -1243,6 +1275,13 @@ export class TuiController {
     return { id: goal.id as GoalRef['id'], revision: goal.revision }
   }
 
+  private async commandGoalCreate(objective: string): Promise<void> {
+    const unquoted = unquoteWhole(objective)
+    if (unquoted === '') throw new Error('用法：/goal <objective>')
+    const result = value(await this.api.goals.create({ sessionId: this.selectedSessionId(), objective: unquoted }))
+    this.setNotice(`Goal 已创建（revision ${String(result.ref.revision)}）`)
+  }
+
   private commandGoalShow(): void {
     const projection = this.state.projections.goal
     this.showOverlay('Goal', projection === undefined || projection === null
@@ -1251,9 +1290,10 @@ export class TuiController {
   }
 
   private async commandGoalEdit(objective: string): Promise<void> {
-    if (objective === '') throw new Error('用法：/goal-edit <objective>')
+    const unquoted = unquoteWhole(objective)
+    if (unquoted === '') throw new Error('用法：/goal-edit <objective>')
     const result = value(await this.api.goals.edit({
-      sessionId: this.selectedSessionId(), ref: this.goalRef(), objective,
+      sessionId: this.selectedSessionId(), ref: this.goalRef(), objective: unquoted,
     }))
     this.setNotice(`Goal 已更新到 revision ${String(result.ref.revision)}`)
   }
@@ -1317,10 +1357,15 @@ export class TuiController {
     const api = firstArgument(baseURL.rest)
     const keyEnvironment = firstArgument(api.rest)
     if (namespace.value === '') {
-      throw new Error('用法：/discover-models <settings-ns> [provider|-] [base-url|-] [api|-] [api-key-env]')
+      throw new Error('用法：/discover-models <settings-ns> [provider|-] [base-url|-] [api|-] [api-key-env|-]')
     }
-    const apiKey = keyEnvironment.value === '' ? undefined : process.env[keyEnvironment.value]
-    if (keyEnvironment.value !== '' && apiKey === undefined) throw new Error(`环境变量 ${keyEnvironment.value} 未设置`)
+    const apiKey = keyEnvironment.value === '' || keyEnvironment.value === '-' ? undefined : process.env[keyEnvironment.value]
+    if (apiKey === undefined && keyEnvironment.value !== '' && keyEnvironment.value !== '-') {
+      throw new Error(`环境变量 ${keyEnvironment.value} 未设置`)
+    }
+    if (keyEnvironment.rest !== '') {
+      throw new Error('用法：/discover-models <settings-ns> [provider|-] [base-url|-] [api|-] [api-key-env|-]')
+    }
     const discovered = value(await this.api.llm.discoverModels({
       settingsNs: namespace.value,
       ...(provider.value === '' || provider.value === '-' ? {} : { provider: provider.value }),
@@ -1524,7 +1569,7 @@ export class TuiController {
   private async commandCredentialSet(input: string): Promise<void> {
     const reference = firstArgument(input)
     const environment = firstArgument(reference.rest)
-    if (reference.value === '' || environment.value === '') {
+    if (reference.value === '' || environment.value === '' || environment.rest !== '') {
       throw new Error('用法：/credential-set <REF> <VALUE_ENV_VAR>（secret 不进入命令历史）')
     }
     const secret = process.env[environment.value]
@@ -1543,7 +1588,8 @@ export class TuiController {
   }
 
   private async commandDirectories(path: string): Promise<void> {
-    const listing = value(await this.api.host.listDirectory(path === '' ? {} : { path }))
+    const unquoted = unquoteWhole(path)
+    const listing = value(await this.api.host.listDirectory(unquoted === '' ? {} : { path: unquoted }))
     const items = [
       ...listing.crumbs.filter(crumb => crumb.path !== listing.path).map(crumb => ({
         value: crumb.path,
@@ -1571,14 +1617,15 @@ export class TuiController {
   private async commandMkdir(input: string): Promise<void> {
     const parent = firstArgument(input)
     const name = firstArgument(parent.rest)
-    if (parent.value === '' || name.value === '') throw new Error('用法：/mkdir <parent-path> <name>')
+    if (parent.value === '' || name.value === '' || name.rest !== '') throw new Error('用法：/mkdir <parent-path> <name>')
     const created = value(await this.api.host.createDirectory({ path: parent.value, name: name.value }))
     this.setNotice(`已创建目录 ${created.path}`)
   }
 
   private async commandOpen(path: string): Promise<void> {
-    if (path === '') throw new Error('用法：/open <path>')
-    const absolute = resolve(this.state.cwd ?? process.cwd(), path)
+    const unquoted = unquoteWhole(path)
+    if (unquoted === '') throw new Error('用法：/open <path>')
+    const absolute = resolve(this.state.cwd ?? process.cwd(), unquoted)
     value(await this.api.host.openPath({ path: absolute }))
     this.setNotice(`已交给宿主打开：${absolute}`)
   }
@@ -1599,7 +1646,7 @@ export class TuiController {
     if (cordis === undefined) throw new Error('当前组合未启用 dynamic Cordis runner')
     const plugin = firstArgument(input)
     const pkg = firstArgument(plugin.rest)
-    if (plugin.value === '') throw new Error('用法：/cordis-run <plugin-id> [package-id]（仅 host-only package）')
+    if (plugin.value === '' || pkg.rest !== '') throw new Error('用法：/cordis-run <plugin-id> [package-id]（仅 host-only package）')
     const result = await cordis.runHostOnly(this.selectedSessionId(), plugin.value, pkg.value || undefined)
     this.commandCordis()
     this.setNotice(result)
@@ -1664,7 +1711,7 @@ export class TuiController {
       sessionId,
       messageId,
       rating: rating.value,
-      ...(rating.rest === '' ? {} : { note: rating.rest }),
+      ...(rating.rest === '' ? {} : { note: unquoteWhole(rating.rest) }),
       ifVersion: existing?.version ?? null,
     })
     if (!result.ok) throw feedbackError(result)
@@ -1696,11 +1743,14 @@ export class TuiController {
     if (this.target?.kind === 'subagent') throw new Error('subagent continuation 当前只接受持久 ContentBlock，不能接收临时图片字节')
     const path = firstArgument(input)
     if (path.value === '') throw new Error('用法：/image <path> [caption] 或 /image-steer <path> [caption]')
-    const absolute = resolve(path.value)
+    // Resolve against the session cwd like /open: the footer advertises that
+    // directory, and it survives session switches while process.cwd() does not.
+    const absolute = resolve(this.state.cwd ?? process.cwd(), path.value)
+    const mediaType = imageMediaType(absolute)
     const bytes = await readFile(absolute)
     const content: PromptContentPart[] = [
-      ...(path.rest === '' ? [] : [{ type: 'text' as const, text: path.rest }]),
-      { type: 'image', mediaType: imageMediaType(absolute), data: bytes.toString('base64'), name: basename(absolute) },
+      ...(path.rest === '' ? [] : [{ type: 'text' as const, text: unquoteWhole(path.rest) }]),
+      { type: 'image', mediaType, data: bytes.toString('base64'), name: basename(absolute) },
     ]
     const timeZone = currentTimeZone()
     const response = value(await this.api.sessions.prompt({
@@ -1713,7 +1763,7 @@ export class TuiController {
   private async commandSaveImage(input: string): Promise<void> {
     const attachment = firstArgument(input)
     const outputArgument = firstArgument(attachment.rest)
-    if (attachment.value === '') throw new Error('用法：/save-image <attachment-id> [output-path]')
+    if (attachment.value === '' || outputArgument.rest !== '') throw new Error('用法：/save-image <attachment-id> [output-path]')
     const stored = value(await this.api.sessions.attachment({
       sessionId: this.selectedSessionId(), attachmentId: attachment.value as AttachmentId,
     }))
@@ -1726,11 +1776,20 @@ export class TuiController {
   private async commandExport(input: string): Promise<void> {
     const downloads = this.extensions.downloads
     if (downloads === undefined) throw new Error('当前组合未启用 session export')
-    const first = firstArgument(input)
-    const includeDescendants = first.value === '--descendants' || first.rest === '--descendants'
-    const output = first.value === '' || first.value === '--descendants'
-      ? resolve(`dsh-session-${this.selectedSessionId()}.zip`)
-      : resolve(first.value)
+    let includeDescendants = false
+    let outputArgument: string | undefined
+    let rest = input
+    while (rest.trim() !== '') {
+      const argument = firstArgument(rest)
+      rest = argument.rest
+      if (argument.value === '--descendants') {
+        includeDescendants = true
+        continue
+      }
+      if (outputArgument !== undefined) throw new Error('用法：/export [path] [--descendants]')
+      outputArgument = argument.value
+    }
+    const output = resolve(outputArgument ?? `dsh-session-${this.selectedSessionId()}.zip`)
     const response = await downloads.sessionLog(
       { sessionId: this.selectedSessionId(), ...(includeDescendants ? { includeDescendants: true } : {}) },
       new AbortController().signal,
@@ -1840,8 +1899,9 @@ export class TuiController {
   }
 
   private async commandRename(title: string): Promise<void> {
-    if (title === '') throw new Error('用法：/rename <title>')
-    const result = value(await this.api.sessions.rename({ sessionId: this.selectedSessionId(), title }))
+    const unquoted = unquoteWhole(title)
+    if (unquoted === '') throw new Error('用法：/rename <title>')
+    const result = value(await this.api.sessions.rename({ sessionId: this.selectedSessionId(), title: unquoted }))
     this.update(state => ({
       ...state,
       title: result.title,
@@ -1852,7 +1912,7 @@ export class TuiController {
 
   private async commandFork(input: string): Promise<void> {
     const atSeq = input === '' ? undefined : Number(input)
-    if (atSeq !== undefined && !Number.isSafeInteger(atSeq)) throw new Error('用法：/fork [event-seq]')
+    if (atSeq !== undefined && (!Number.isSafeInteger(atSeq) || atSeq < 0)) throw new Error('用法：/fork [event-seq]')
     const forked = value(await this.api.sessions.fork({
       sessionId: this.selectedSessionId(), ...(atSeq === undefined ? {} : { atSeq }),
     }))
@@ -1876,7 +1936,10 @@ export class TuiController {
     '/fork': rest => this.commandFork(rest),
     '/older': () => this.commandOlder(),
     '/models': () => this.commandModels(),
-    '/model': (_rest, parts) => this.commandModel(parts[0] ?? '', parts[1]),
+    '/model': (_rest, parts) => {
+      if (parts.length > 2) throw new Error('用法：/model [provider/model] [reasoning-effort]')
+      return this.commandModel(parts[0] ?? '', parts[1])
+    },
     '/effort': () => this.commandEffort(),
     '/queue': () => { this.commandQueue() },
     '/queue-edit': rest => this.commandQueueEdit(rest),
@@ -1907,6 +1970,7 @@ export class TuiController {
     '/settings-set': rest => this.commandSettingsSet(rest),
     '/settings-unset': rest => this.commandSettingsUnset(rest),
     '/settings-reset': rest => this.commandSettingsReset(rest),
+    '/goal': rest => this.commandGoalCreate(rest),
     '/goal-show': () => { this.commandGoalShow() },
     '/goal-edit': rest => this.commandGoalEdit(rest),
     '/goal-pause': () => this.commandGoalAction('pause'),
