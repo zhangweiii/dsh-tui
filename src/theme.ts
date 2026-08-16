@@ -20,6 +20,7 @@ export const ansi = {
   magenta: sgr(35, 39),
   cyan: sgr(36, 39),
   gray: sgr(90, 39),
+  strikethrough: sgr(9, 29),
 } as const
 
 export const selectListTheme: SelectListTheme = {
@@ -48,6 +49,6 @@ export const markdownTheme: MarkdownTheme = {
   listBullet: ansi.cyan,
   bold: ansi.bold,
   italic: ansi.italic,
-  strikethrough: text => `\u001B[9m${text}\u001B[29m`,
+  strikethrough: ansi.strikethrough,
   underline: ansi.underline,
 }

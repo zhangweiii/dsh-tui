@@ -9,12 +9,28 @@ import {
 import { slashCommands } from './commands.ts'
 import type { TuiController } from './controller.ts'
 import type { Config } from './index.ts'
-import type { TuiViewState } from './model.ts'
-import { TerminalView } from './view.ts'
+import type { PendingQuestion, TuiViewState } from './model.ts'
+import { TerminalView, type QuestionFlowSnapshot } from './view.ts'
 
 export interface TerminalApplicationOptions {
   terminal?: Terminal
   onExit?: (code: number) => void
+}
+
+/** Mutable state machine behind one pending structured-question batch. */
+class QuestionFlow implements QuestionFlowSnapshot {
+  index = 0
+  reviewing = false
+  submitting = false
+  answers: AskUserQuestionAnswerItem[] = []
+
+  /** Reset the flow when the owned interaction changes or clears. */
+  reset(): void {
+    this.index = 0
+    this.reviewing = false
+    this.submitting = false
+    this.answers = []
+  }
 }
 
 function interactionKey(state: TuiViewState): string {
@@ -44,10 +60,7 @@ export class TerminalApplication {
   private stopped = false
   private unsubscribe: (() => void) | undefined
   private removeInputListener: (() => void) | undefined
-  private questionIndex = 0
-  private questionAnswers: AskUserQuestionAnswerItem[] = []
-  private questionSubmitting = false
-  private questionReviewing = false
+  private readonly question = new QuestionFlow()
   private currentInteractionKey = ''
 
   constructor(
@@ -72,10 +85,9 @@ export class TerminalApplication {
       cancelQuestionRequest: () => { void this.controller.cancelQuestion() },
       editQuestion: (index) => { this.editQuestion(index) },
       confirmQuestionAnswers: () => { void this.confirmQuestionAnswers() },
-      chooseProviderWizardRow: (row) => { this.controller.chooseProviderWizardRow(row) },
-      submitProviderWizardValue: (row, text) => { this.controller.submitProviderWizardValue(row, text) },
+      chooseProviderWizardRow: (row) => { this.controller.wizardPick(row) },
+      submitProviderWizardValue: (row, text) => { this.controller.wizardValue(row, text) },
       cancelProviderWizard: () => { this.controller.cancelProviderWizard() },
-      backProviderWizardToMenu: () => { this.controller.backProviderWizardToMenu() },
     })
     this.view.editor.setAutocompleteProvider(new CombinedAutocompleteProvider(slashCommands(), config.cwd ?? process.cwd()))
     this.view.editor.onSubmit = text => { void this.submit(text, 'queue') }
@@ -111,15 +123,18 @@ export class TerminalApplication {
     const nextInteractionKey = interactionKey(next)
     if (nextInteractionKey !== this.currentInteractionKey) {
       this.currentInteractionKey = nextInteractionKey
-      this.questionIndex = 0
-      this.questionAnswers = []
-      this.questionSubmitting = false
-      this.questionReviewing = false
+      this.question.reset()
       this.view.questionEditor.setText('')
     }
     this.state = next
-    this.view.update(next, this.questionIndex, this.questionReviewing, this.questionSubmitting, this.questionAnswers)
+    this.view.update(next, this.question)
     this.tui.setFocus(this.view.focusTarget)
+    this.tui.requestRender()
+  }
+
+  /** Repaint after local flow changes that produced no new controller snapshot. */
+  private refresh(): void {
+    this.view.update(this.state, this.question)
     this.tui.requestRender()
   }
 
@@ -143,8 +158,8 @@ export class TerminalApplication {
         // focused component owns Escape (return to the menu, or cancel the whole
         // request). Option-less and multi-select questions keep the editor, so
         // Escape abandons the whole request right here.
-        if (this.questionReviewing) return undefined
-        const current = interaction.questions[this.questionIndex]
+        if (this.question.reviewing) return undefined
+        const current = interaction.questions[this.question.index]
         if (current === undefined || current.multiSelect === true || (current.options?.length ?? 0) === 0) {
           void this.controller.cancelQuestion()
           return { consume: true }
@@ -200,32 +215,36 @@ export class TerminalApplication {
     this.tui.requestRender()
   }
 
-  private async submitQuestion(text: string): Promise<void> {
+  /** The pending question interaction and its current item, unless a submission is in flight. */
+  private currentQuestion(): { interaction: PendingQuestion; question: AskUserQuestionItem } | undefined {
     const interaction = this.state.interaction
-    if (interaction?.kind !== 'question' || this.questionSubmitting) return
-    const question = interaction.questions[this.questionIndex]
-    if (question === undefined) return
-    await this.advanceQuestion(optionAnswer(question, text), true)
+    if (interaction?.kind !== 'question' || this.question.submitting) return undefined
+    const question = interaction.questions[this.question.index]
+    return question === undefined ? undefined : { interaction, question }
+  }
+
+  private async submitQuestion(text: string): Promise<void> {
+    const current = this.currentQuestion()
+    if (current === undefined) return
+    await this.advanceQuestion(optionAnswer(current.question, text), true)
   }
 
   /** Submit one menu option as the current question's answer. */
   private async submitQuestionChoice(label: string): Promise<void> {
-    const interaction = this.state.interaction
-    if (interaction?.kind !== 'question' || this.questionSubmitting) return
-    const question = interaction.questions[this.questionIndex]
-    if (question === undefined) return
-    await this.advanceQuestion({ id: question.id, selected: [label] }, false)
+    const current = this.currentQuestion()
+    if (current === undefined) return
+    await this.advanceQuestion({ id: current.question.id, selected: [label] }, false)
   }
 
   /** Submit free-form text from the picker's custom-answer editor, verbatim. */
   private async submitQuestionCustom(text: string): Promise<void> {
-    const interaction = this.state.interaction
-    if (interaction?.kind !== 'question' || this.questionSubmitting) return
-    const question = interaction.questions[this.questionIndex]
-    if (question === undefined) return
+    const current = this.currentQuestion()
+    if (current === undefined) return
     const normalized = text.trim()
     await this.advanceQuestion(
-      normalized === '' ? { id: question.id, selected: [] } : { id: question.id, selected: [], custom: normalized },
+      normalized === ''
+        ? { id: current.question.id, selected: [] }
+        : { id: current.question.id, selected: [], custom: normalized },
       false,
     )
   }
@@ -239,15 +258,12 @@ export class TerminalApplication {
   private async advanceQuestion(answerItem: AskUserQuestionAnswerItem, clearEditorAfter: boolean): Promise<void> {
     const interaction = this.state.interaction
     if (interaction?.kind !== 'question') return
-    const question = interaction.questions[this.questionIndex]
-    if (question === undefined) return
-    const answers = [...this.questionAnswers, answerItem]
-    this.questionAnswers = answers
-    if (this.questionIndex + 1 < interaction.questions.length) {
-      this.questionIndex += 1
+    if (interaction.questions[this.question.index] === undefined) return
+    this.question.answers = [...this.question.answers, answerItem]
+    if (this.question.index + 1 < interaction.questions.length) {
+      this.question.index += 1
       if (clearEditorAfter) this.view.questionEditor.setText('')
-      this.view.update(this.state, this.questionIndex, false, false, this.questionAnswers)
-      this.tui.requestRender()
+      this.refresh()
       return
     }
     // A one-question batch has nothing to cross-check in a summary, so it is
@@ -259,18 +275,16 @@ export class TerminalApplication {
     // Every question is answered: move to the confirmation summary instead of
     // sending immediately, so the user can review "question → answer" and revise
     // any entry before it is committed to the host.
-    this.questionReviewing = true
-    this.questionSubmitting = false
-    this.view.update(this.state, this.questionIndex, true, false, this.questionAnswers)
-    this.tui.requestRender()
+    this.question.reviewing = true
+    this.question.submitting = false
+    this.refresh()
   }
 
   /** Send the single answered question straight to the host, reopening it on rejection. */
   private async submitSingleQuestion(): Promise<void> {
-    this.questionSubmitting = true
-    this.view.update(this.state, this.questionIndex, false, true, this.questionAnswers)
-    this.tui.requestRender()
-    const accepted = await this.controller.answerQuestion({ answers: this.questionAnswers })
+    this.question.submitting = true
+    this.refresh()
+    const accepted = await this.controller.answerQuestion({ answers: this.question.answers })
     if (this.stopped) return
     if (accepted) {
       // Wait for the host `question/resolved` frame; update() clears the
@@ -280,36 +294,31 @@ export class TerminalApplication {
     // The answer was rejected or the transport failed without resolving the
     // interaction. Reopen the question so the user can answer it again instead
     // of being stuck on a pending submission.
-    this.questionSubmitting = false
-    this.questionIndex = 0
-    this.questionAnswers = []
+    this.question.reset()
     this.view.questionEditor.setText('')
-    this.view.update(this.state, this.questionIndex, false, false, this.questionAnswers)
-    this.tui.requestRender()
+    this.refresh()
   }
 
   /** Reopen one answered question so its answer can be changed. */
   private editQuestion(index: number): void {
     const interaction = this.state.interaction
-    if (interaction?.kind !== 'question' || this.questionSubmitting) return
+    if (interaction?.kind !== 'question' || this.question.submitting) return
     if (index < 0 || index >= interaction.questions.length) return
-    this.questionIndex = index
-    this.questionAnswers = this.questionAnswers.slice(0, index)
-    this.questionReviewing = false
+    this.question.index = index
+    this.question.answers = this.question.answers.slice(0, index)
+    this.question.reviewing = false
     this.view.questionEditor.setText('')
-    this.view.update(this.state, this.questionIndex, false, false, this.questionAnswers)
-    this.tui.requestRender()
+    this.refresh()
   }
 
   /** Send the confirmed set of answers to the host. */
   private async confirmQuestionAnswers(): Promise<void> {
     const interaction = this.state.interaction
-    if (interaction?.kind !== 'question' || this.questionSubmitting) return
-    this.questionReviewing = false
-    this.questionSubmitting = true
-    this.view.update(this.state, this.questionIndex, false, true, this.questionAnswers)
-    this.tui.requestRender()
-    const accepted = await this.controller.answerQuestion({ answers: this.questionAnswers })
+    if (interaction?.kind !== 'question' || this.question.submitting) return
+    this.question.reviewing = false
+    this.question.submitting = true
+    this.refresh()
+    const accepted = await this.controller.answerQuestion({ answers: this.question.answers })
     if (this.stopped) return
     if (accepted) {
       // Wait for the host `question/resolved` frame; update() clears the
@@ -319,9 +328,8 @@ export class TerminalApplication {
     // The answer was rejected or the transport failed without resolving the
     // interaction. Return to the confirmation summary so the user can retry or
     // revise an entry instead of being stuck on a pending submission.
-    this.questionSubmitting = false
-    this.questionReviewing = true
-    this.view.update(this.state, this.questionIndex, true, false, this.questionAnswers)
-    this.tui.requestRender()
+    this.question.submitting = false
+    this.question.reviewing = true
+    this.refresh()
   }
 }

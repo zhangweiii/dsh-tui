@@ -95,7 +95,6 @@ export class TestController {
   closePickerCount = 0
   closeOverlayCount = 0
   cancelWizardCount = 0
-  backWizardCount = 0
   startCount = 0
   disposeCount = 0
   toggleFoldCount = 0
@@ -136,10 +135,9 @@ export class TestController {
     return this.answerQuestionResult
   }
   async cancelQuestion(): Promise<void> { this.cancelQuestionCount += 1 }
-  chooseProviderWizardRow(row: number): void { this.wizardRows.push(row) }
-  submitProviderWizardValue(row: ProviderSetupField, text: string): void { this.wizardValues.push({ row, text }) }
+  wizardPick(row: number): void { this.wizardRows.push(row) }
+  wizardValue(row: ProviderSetupField, text: string): void { this.wizardValues.push({ row, text }) }
   cancelProviderWizard(): void { this.cancelWizardCount += 1 }
-  backProviderWizardToMenu(): void { this.backWizardCount += 1 }
   toggleFold(): void { this.toggleFoldCount += 1 }
   dispose(): void { this.disposeCount += 1 }
 

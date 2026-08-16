@@ -1,3 +1,10 @@
+/**
+ * Progressive provider setup: joins the Host's provider/settings/credential
+ * facts into a draft, validates and edits it field by field, and commits it
+ * through the settings-mutation and credential seams. The renderer only sees
+ * `providerSetupRows`; everything else is pure draft logic the tests drive
+ * without a terminal.
+ */
 import {
   getPath, nodeAtPath, rehydrateSchema,
 } from '@deepseek-ai/dsh-client-schema-form'

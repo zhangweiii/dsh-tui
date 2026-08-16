@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from 'vitest'
 import Schema from '@deepseek-ai/schemastery'
 import { RpcId, type IApiClient, type MuxFrame, type RpcResponse, type SessionSummary } from '@deepseek-ai/dsh-host-apiproxy'
 import { SessionId } from '@deepseek-ai/dsh-session'
+import { LOCAL_COMMANDS } from '../src/commands.ts'
 import { TuiController } from '../src/controller.ts'
 
 const SID = SessionId('session-root')
@@ -628,6 +629,20 @@ describe('TuiController', () => {
     controller.dispose()
   })
 
+  it('dispatches every catalogued local command without forwarding it to the session', async () => {
+    // Drift guard for the single-source catalog in commands.ts: a catalogued
+    // command without a controller handler would fall through to the Harness
+    // prompt path and call sessions.prompt.
+    const fake = fakeApi({ items: [summary()] })
+    const controller = new TuiController(fake.api)
+    await controller.start({ continueLatest: false, resume: SID })
+    for (const { command } of LOCAL_COMMANDS) {
+      await expect(controller.submit(command)).resolves.toBe(true)
+    }
+    expect(fake.prompt).not.toHaveBeenCalled()
+    controller.dispose()
+  })
+
   it('switches permission through the local Host extension instead of forwarding chat', async () => {
     const fake = fakeApi({ items: [summary()] })
     const permission = vi.fn<(_id: SessionId, preset: string) => Promise<string>>(
@@ -883,16 +898,16 @@ describe('TuiController', () => {
     expect(wizard?.settingsPath).toEqual(['providers'])
     expect(wizard?.providerId).toBe('')
 
-    controller.submitProviderWizardValue('providerId', 'my-gateway')
-    controller.submitProviderWizardValue('baseURL', 'https://gateway.example/v1')
-    controller.chooseProviderWizardRow(0) // Host-schema protocol selector
-    controller.submitProviderWizardValue('apiKey', 'sk-test')
-    controller.submitProviderWizardValue('models', '') // blank asks the Host to discover
+    controller.wizardValue('providerId', 'my-gateway')
+    controller.wizardValue('baseURL', 'https://gateway.example/v1')
+    controller.wizardPick(0) // Host-schema protocol selector
+    controller.wizardValue('apiKey', 'sk-test')
+    controller.wizardValue('models', '') // blank asks the Host to discover
 
     await vi.waitFor(() => {
       expect(controller.getSnapshot().providerWizard).toMatchObject({ step: 'review', candidates: [{ id: 'deepseek-chat' }] })
     })
-    controller.chooseProviderWizardRow(0)
+    controller.wizardPick(0)
     await vi.waitFor(() => { expect(fake.settingsMutate).toHaveBeenCalled() })
 
     expect(fake.discoverModelsMock).toHaveBeenCalledWith(expect.objectContaining({
@@ -937,7 +952,7 @@ describe('TuiController', () => {
       kind: 'existing', providerId: 'deepseek', namespace: 'llm-deepseek',
       settingsPath: [], credentialRef: 'DEEPSEEK_API_KEY', step: 'credential', editing: 'apiKey',
     })
-    controller.submitProviderWizardValue('apiKey', 'new-key')
+    controller.wizardValue('apiKey', 'new-key')
     await vi.waitFor(() => { expect(controller.getSnapshot().providerWizard).toBeUndefined() })
     expect(fake.credentialSet).toHaveBeenCalledWith({ ref: 'DEEPSEEK_API_KEY', value: 'new-key' })
     controller.dispose()

@@ -1,8 +1,9 @@
 /** Session lifecycle and ApiProxy orchestration for the terminal renderer. */
 
-import { open, readFile, unlink } from 'node:fs/promises'
+import { createWriteStream } from 'node:fs'
+import { readFile, unlink } from 'node:fs/promises'
 import { basename, extname, resolve } from 'node:path'
-import { Readable } from 'node:stream'
+import { Readable, type Writable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import type {
   DownloadsApi, GoalRef, HistoryEntry, IApiClient, ModelProviderGroup, ModelReasoning, PromptContentPart,
@@ -18,6 +19,7 @@ import type { AskUserQuestionAnswer } from '@deepseek-ai/dsh-user-questions/type
 import type { ApprovalOutcome } from '@deepseek-ai/dsh-user-approval/types'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import type { TuiStartupValues } from './startup.ts'
+import { helpLines } from './commands.ts'
 import {
   commitProviderSetup, createProviderSetupDraft, CUSTOM_PROVIDER_VALUE, discoverProviderSetupModels,
   editProviderSetup, loadProviderSetupCatalog, parseProviderAddArgs as parseProviderSetupArgs, providerSetupFieldError,
@@ -28,6 +30,9 @@ import {
   type PendingApproval, type PendingQuestion, projectedTitle, projectionStatus, type TuiPicker,
   type TuiPickerItem, type TuiProviderWizard, type TuiViewState,
 } from './model.ts'
+import {
+  compactJson, formatBytes, formatCount, oneLine, prettyJson,
+} from './format.ts'
 
 type Listener = () => void
 
@@ -78,13 +83,13 @@ interface JobKillClient {
   kill(id: string, reason?: string): Promise<{ status: 'requested' | 'already-finished' }>
 }
 
-/** Host-only capabilities whose transports intentionally sit outside IApiClient. */
-/** Local Host-only permission switch, mirroring `/jobs`: resolves the live agent from the session id. */
+/** Local Host-only permission switch, mirroring the Host's `/permission` command: resolves the live agent from the session id. */
 export interface PermissionSwitchClient {
   /** Switch `sessionId` to the named permission preset; returns a user-facing summary. */
   set(sessionId: SessionId, preset: string): Promise<string>
 }
 
+/** Host-only capabilities whose transports intentionally sit outside IApiClient. */
 export interface TuiHostExtensions {
   feedback?: MessageFeedbackClient
   downloads?: DownloadsApi
@@ -105,9 +110,9 @@ function failure<T>(response: RpcResponse<T>): Error | undefined {
 }
 
 function value<T>(response: RpcResponse<T>): T {
-  const error = failure(response)
-  if (error !== undefined) throw error
-  if (!response.result.ok) throw new Error('unreachable')
+  if (!response.result.ok) {
+    throw new Error(`${response.result.error.code}: ${response.result.error.message}`)
+  }
   return response.result.value
 }
 
@@ -123,38 +128,45 @@ function currentTimeZone(): string | undefined {
   }
 }
 
+/** Optimistic summary for a freshly created session the Host has not listed yet. */
+function freshSummary(created: { sessionId: SessionId; agentPreset?: string; cwd: string }): SessionSummary {
+  return {
+    sessionId: created.sessionId,
+    updatedAt: Date.now(),
+    running: false,
+    blank: true,
+    cwd: created.cwd,
+    ...(created.agentPreset === undefined ? {} : { agentPreset: created.agentPreset }),
+  }
+}
+
+/** Write `output` with create-only semantics, removing the partial file when the write fails. */
+async function writeFileExclusive(output: string, write: (sink: Writable) => Promise<unknown>): Promise<void> {
+  const sink = createWriteStream(output, { flags: 'wx' })
+  try {
+    await write(sink)
+  } catch (error) {
+    sink.destroy()
+    await unlink(output).catch(() => {})
+    throw error
+  }
+}
+
 function rootSession(items: readonly SessionSummary[]): SessionSummary | undefined {
   return items.find(item => item.origin !== 'subagent')
 }
 
-function compactJson(input: unknown): string {
-  try {
-    return JSON.stringify(input)
-  } catch {
-    return String(input)
-  }
-}
-
-function prettyJson(input: unknown): string[] {
-  try {
-    return JSON.stringify(input, undefined, 2).split('\n')
-  } catch {
-    return [String(input)]
-  }
-}
-
-function formatCount(value: number): string {
-  return new Intl.NumberFormat('zh-CN').format(value)
-}
-
-function oneLine(value: string): string {
-  return value.replaceAll(/\s*\n\s*/gu, ' ').trim()
-}
-
-function formatBytes(value: number): string {
-  return value >= 1024 * 1024
-    ? `${(value / 1024 / 1024).toFixed(1)} MiB`
-    : `${(value / 1024).toFixed(1)} KiB`
+/**
+ * Resolve a query against identifiable items: an exact id or an unambiguous
+ * id prefix. Multiple prefix hits still resolve when one is an exact match.
+ */
+function uniquePrefixMatch<T>(items: readonly T[], query: string, id: (item: T) => string, label: string): T {
+  const matches = items.filter(item => id(item) === query || id(item).startsWith(query))
+  if (matches.length === 1) return matches[0] as T
+  if (matches.length === 0) throw new Error(`找不到${label}：${query}`)
+  const exact = matches.find(item => id(item) === query)
+  if (exact !== undefined) return exact
+  throw new Error(`${label}前缀不唯一：${query}（匹配 ${matches.map(item => id(item)).join('、')}），请使用完整 id`)
 }
 
 function firstArgument(input: string): { value: string; rest: string } {
@@ -306,19 +318,9 @@ export class TuiController {
       if (found !== undefined) return await this.attachWorkspaceSession(found)
     }
     const createdValue = await this.createWorkspaceSession(config.cwd)
-    const refreshed = await this.api.sessions.list({})
-    const listError = failure(refreshed)
-    if (listError !== undefined) throw listError
-    if (!refreshed.result.ok) throw new Error('unreachable')
-    const found = refreshed.result.value.items.find(item => item.sessionId === createdValue.sessionId)
-    return found ?? {
-      sessionId: createdValue.sessionId,
-      updatedAt: Date.now(),
-      running: false,
-      blank: true,
-      cwd: createdValue.cwd,
-      ...(createdValue.agentPreset === undefined ? {} : { agentPreset: createdValue.agentPreset }),
-    }
+    const refreshed = value(await this.api.sessions.list({}))
+    const found = refreshed.items.find(item => item.sessionId === createdValue.sessionId)
+    return found ?? freshSummary(createdValue)
   }
 
   private async refreshSessions(): Promise<SessionSummary[]> {
@@ -370,6 +372,45 @@ export class TuiController {
     this.historyEntries = entries
     this.seenEventSeqs.clear()
     for (const entry of entries) this.seenEventSeqs.add(entry.event.seq)
+  }
+
+  /** Merge fetched entries into the retained history, deduplicated by event seq. */
+  private mergeHistory(fetched: readonly HistoryEntry[]): void {
+    const bySeq = new Map<number, HistoryEntry>()
+    for (const entry of [...this.historyEntries, ...fetched]) bySeq.set(entry.event.seq, entry)
+    this.replaceHistory([...bySeq.values()].sort((left, right) => left.event.seq - right.event.seq))
+  }
+
+  /**
+   * Re-fold the retained history into a fresh projection, carrying over the
+   * non-transcript chrome (selection, pickers, interaction, notice). New
+   * TuiViewState fields are carried here once; both history rebuild paths
+   * (resync and backward pagination) pick them up.
+   */
+  private refoldHistory(overrides: Partial<TuiViewState> = {}): TuiViewState {
+    const current = this.state
+    return applyHistory({
+      ...createInitialState(),
+      phase: 'ready',
+      sessionId: current.sessionId,
+      title: current.title,
+      agentPreset: current.agentPreset,
+      cwd: current.cwd,
+      model: current.model,
+      reasoningEffort: current.reasoningEffort,
+      modelContextWindow: current.modelContextWindow,
+      running: current.running,
+      queueSize: current.queueSize,
+      queueItems: current.queueItems,
+      jobs: current.jobs,
+      projections: current.projections,
+      sessions: current.sessions,
+      interaction: current.interaction,
+      overlay: current.overlay,
+      picker: current.picker,
+      notice: current.notice,
+      ...overrides,
+    }, this.historyEntries)
   }
 
   private applyMuxEnvelope(rpcId: Parameters<typeof applyMuxFrame>[1], frame: Parameters<typeof applyMuxFrame>[2]): void {
@@ -430,32 +471,12 @@ export class TuiController {
       beforeSeq = minimum
     }
 
-    const bySeq = new Map<number, HistoryEntry>()
-    for (const entry of [...this.historyEntries, ...fetched]) bySeq.set(entry.event.seq, entry)
-    this.replaceHistory([...bySeq.values()].sort((left, right) => left.event.seq - right.event.seq))
-    const current = this.state
-    const baselineProjections = projections ?? current.projections
-    const folded = applyHistory({
-      ...createInitialState(),
-      phase: 'ready',
-      sessionId: current.sessionId,
+    this.mergeHistory(fetched)
+    const baselineProjections = projections ?? this.state.projections
+    const folded = this.refoldHistory({
       title: projectedTitle(baselineProjections),
-      agentPreset: current.agentPreset,
-      cwd: current.cwd,
-      model: current.model,
-      reasoningEffort: current.reasoningEffort,
-      modelContextWindow: current.modelContextWindow,
-      running: current.running,
-      queueSize: current.queueSize,
-      queueItems: current.queueItems,
-      jobs: current.jobs,
       projections: baselineProjections,
-      sessions: current.sessions,
-      interaction: current.interaction,
-      overlay: current.overlay,
-      picker: current.picker,
-      notice: current.notice,
-    }, this.historyEntries)
+    })
     if (this.target === target) this.publish(folded)
   }
 
@@ -553,14 +574,11 @@ export class TuiController {
     if (this.started) return
     this.started = true
     try {
-      const listed = await this.api.sessions.list({})
-      const listError = failure(listed)
-      if (listError !== undefined) throw listError
-      if (!listed.result.ok) throw new Error('unreachable')
-      const summary = await this.resolveSession(config, listed.result.value.items)
-      const sessions = listed.result.value.items.some(item => item.sessionId === summary.sessionId)
-        ? listed.result.value.items.map(item => item.sessionId === summary.sessionId ? summary : item)
-        : [summary, ...listed.result.value.items]
+      const listed = value(await this.api.sessions.list({}))
+      const summary = await this.resolveSession(config, listed.items)
+      const sessions = listed.items.some(item => item.sessionId === summary.sessionId)
+        ? listed.items.map(item => item.sessionId === summary.sessionId ? summary : item)
+        : [summary, ...listed.items]
       let markMuxOpen: (() => void) | undefined
       const muxOpen = new Promise<void>((resolve) => { markMuxOpen = resolve })
       void this.openMux(() => { markMuxOpen?.() })
@@ -604,10 +622,7 @@ export class TuiController {
   }
 
   private findSession(items: readonly SessionSummary[], query: string): SessionSummary {
-    const matches = items.filter(item => item.sessionId === query || item.sessionId.startsWith(query))
-    if (matches.length === 0) throw new Error(`找不到会话 ${query}`)
-    if (matches.length > 1) throw new Error(`会话前缀不唯一：${query}`)
-    return matches[0] as SessionSummary
+    return uniquePrefixMatch(items, query, item => item.sessionId, '会话')
   }
 
   /** Hide blank sessions from pickers; the currently loaded session stays visible for context. */
@@ -650,14 +665,7 @@ export class TuiController {
   private async commandNew(cwd: string): Promise<void> {
     const created = await this.createWorkspaceSession(cwd === '' ? undefined : cwd)
     const items = await this.refreshSessions()
-    const summary = items.find(item => item.sessionId === created.sessionId) ?? {
-      sessionId: created.sessionId,
-      updatedAt: Date.now(),
-      running: false,
-      blank: true,
-      cwd: created.cwd,
-      ...(created.agentPreset === undefined ? {} : { agentPreset: created.agentPreset }),
-    }
+    const summary = items.find(item => item.sessionId === created.sessionId) ?? freshSummary(created)
     await this.loadSession(summary, items.some(item => item.sessionId === summary.sessionId) ? items : [summary, ...items])
   }
 
@@ -826,31 +834,10 @@ export class TuiController {
     const page = target.kind === 'session'
       ? value(await this.api.sessions.history({ sessionId: target.summary.sessionId, beforeSeq, maxMessages: 100 }))
       : value(await this.api.subagents.history({ ...target.address, beforeSeq, maxMessages: 100 }))
-    const bySeq = new Map<number, HistoryEntry>()
-    for (const entry of [...page.events, ...this.historyEntries]) bySeq.set(entry.event.seq, entry)
-    this.replaceHistory([...bySeq.values()].sort((left, right) => left.event.seq - right.event.seq))
+    this.mergeHistory(page.events)
     this.hasMoreHistory = page.hasMore
     const current = this.state
-    const folded = applyHistory({
-      ...createInitialState(),
-      phase: 'ready',
-      sessionId: current.sessionId,
-      title: current.title,
-      agentPreset: current.agentPreset,
-      cwd: current.cwd,
-      model: current.model,
-      reasoningEffort: current.reasoningEffort,
-      modelContextWindow: current.modelContextWindow,
-      running: current.running,
-      queueSize: current.queueSize,
-      queueItems: current.queueItems,
-      jobs: current.jobs,
-      projections: current.projections,
-      sessions: current.sessions,
-      interaction: current.interaction,
-      overlay: current.overlay,
-      picker: current.picker,
-    }, this.historyEntries)
+    const folded = this.refoldHistory()
     this.publish({
       ...folded,
       partialText: current.partialText,
@@ -861,15 +848,12 @@ export class TuiController {
   }
 
   private queueItem(query: string): QueuedInboxItem {
-    const matches = this.state.queueItems.filter(item => String(item.id) === query || String(item.id).startsWith(query))
-    if (matches.length === 0) throw new Error(`找不到 queue item ${query}`)
-    if (matches.length > 1) throw new Error(`queue item 前缀不唯一：${query}`)
-    return matches[0] as QueuedInboxItem
+    return uniquePrefixMatch(this.state.queueItems, query, item => String(item.id), 'queue item')
   }
 
   private commandQueue(): void {
     this.showOverlay('Queue', this.state.queueItems.length === 0 ? ['当前队列为空'] : this.state.queueItems.map((item) => {
-      const preview = contentText(item.message.content).replaceAll('\n', ' ')
+      const preview = oneLine(contentText(item.message.content))
       return `${item.id} · ${item.placement} · ${preview || '[非文本消息]'}`
     }))
   }
@@ -920,10 +904,7 @@ export class TuiController {
     if (!confirmation.confirmed) throw new Error('停止后台任务需要追加 --yes')
     const query = confirmation.rest
     if (query === '') throw new Error('用法：/job-kill <id-or-prefix> --yes')
-    const matches = this.state.jobs.filter(job => job.id === query || job.id.startsWith(query))
-    if (matches.length === 0) throw new Error(`没有匹配的后台任务：${query}`)
-    const target = matches.length === 1 ? (matches[0] as NonNullable<(typeof matches)[number]>) : matches.find(job => job.id === query)
-    if (target === undefined) throw new Error(`匹配到多个后台任务，请使用完整 id：${matches.map(job => job.id).join('、')}`)
+    const target = uniquePrefixMatch(this.state.jobs, query, job => job.id, '后台任务')
     let result: { status: 'requested' | 'already-finished' }
     try {
       result = await jobClient.kill(target.id, `TUI /job-kill by user`)
@@ -1121,12 +1102,12 @@ export class TuiController {
     }
     const parentSessionId = this.selectedSessionId()
     const catalog = value(await this.api.subagents.list({ parentSessionId }))
-    const matches = catalog.entries.filter(entry => entry.kind === 'child'
-      && (entry.id === query || entry.id.startsWith(query)))
-    if (matches.length === 0) throw new Error(`找不到 subagent ${query}`)
-    if (matches.length > 1) throw new Error(`subagent 前缀不唯一：${query}`)
-    const child = matches[0]
-    if (child?.kind !== 'child') throw new Error(`subagent ${query} 不可用`)
+    const child = uniquePrefixMatch(
+      catalog.entries.filter(entry => entry.kind === 'child'),
+      query,
+      entry => entry.id,
+      'subagent',
+    )
     const address: SubagentAddress = child.mode === 'continuable'
       ? { parentSessionId, childSessionId: child.id, mode: 'continuable' }
       : { parentSessionId, childSessionId: child.id, mode: 'one-shot' }
@@ -1490,7 +1471,8 @@ export class TuiController {
     }
   }
 
-  private async confirmProviderWizard(wizard = this.state.providerWizard): Promise<void> {
+  /** Submit the completed wizard; invoked by the view's review row. */
+  async confirmProviderWizard(wizard = this.state.providerWizard): Promise<void> {
     if (wizard === undefined || wizard.busy) return
     this.update(state => ({ ...state, providerWizard: { ...wizard, busy: true, error: undefined } }))
     try {
@@ -1527,26 +1509,6 @@ export class TuiController {
         ? { notice: `Provider ${wizard.providerId} 配置已写入，但 API Key 尚未保存` }
         : {}),
     }))
-  }
-
-  /** Public hook for choosing/confirming a wizard menu row from the view. */
-  chooseProviderWizardRow(row: number): void {
-    void this.wizardPick(row)
-  }
-
-  /** Public hook for committing an inline wizard field value from the view. */
-  submitProviderWizardValue(field: ProviderSetupField, text: string): void {
-    this.wizardValue(field, text)
-  }
-
-  /** Public hook for submitting the completed wizard. */
-  confirmProviderWizardPublic(): void {
-    void this.confirmProviderWizard()
-  }
-
-  /** Pi-style prompt cancellation closes the provider flow. */
-  backProviderWizardToMenu(): void {
-    this.cancelProviderWizard()
   }
 
   private async commandCredentials(input: string): Promise<void> {
@@ -1681,11 +1643,8 @@ export class TuiController {
       if (last === undefined) throw new Error('当前 transcript 没有可反馈的 assistant message')
       return last
     }
-    const matches = candidates.flatMap(row => row.messageId !== undefined
-      && (row.messageId === query || row.messageId.startsWith(query)) ? [row.messageId] : [])
-    if (matches.length === 0) throw new Error(`找不到 assistant message ${query}`)
-    if (matches.length > 1) throw new Error(`assistant message 前缀不唯一：${query}`)
-    return matches[0] as MessageId
+    const ids = [...new Set(candidates.map(row => row.messageId as MessageId))]
+    return uniquePrefixMatch(ids, query, id => id, 'assistant message')
   }
 
   private async commandFeedback(input: string): Promise<void> {
@@ -1760,15 +1719,7 @@ export class TuiController {
     }))
     const safeId = attachment.value.replaceAll(/[^a-zA-Z0-9._-]/g, '_')
     const output = resolve(outputArgument.value || `dsh-image-${safeId}.${imageExtension(stored.attachment.mediaType)}`)
-    const file = await open(output, 'wx')
-    try {
-      await file.writeFile(Buffer.from(stored.data, 'base64'))
-      await file.close()
-    } catch (error) {
-      await file.close().catch(() => {})
-      await unlink(output).catch(() => {})
-      throw error
-    }
+    await writeFileExclusive(output, sink => pipeline(Readable.from(Buffer.from(stored.data, 'base64')), sink))
     this.setNotice(`图片已写入 ${output}`)
   }
 
@@ -1786,14 +1737,7 @@ export class TuiController {
     )
     if (!response.ok) throw new Error(`session export: ${String(response.status)} ${await response.text()}`)
     if (response.body === null) throw new Error('session export: Host 返回空响应体')
-    const file = await open(output, 'wx')
-    try {
-      await pipeline(Readable.fromWeb(response.body as never), file.createWriteStream())
-    } catch (error) {
-      await file.close().catch(() => {})
-      await unlink(output).catch(() => {})
-      throw error
-    }
+    await writeFileExclusive(output, sink => pipeline(Readable.fromWeb(response.body as never), sink))
     this.setNotice(`Session export 已写入 ${output}`)
   }
 
@@ -1895,153 +1839,113 @@ export class TuiController {
     this.showOverlay('运行状态', lines)
   }
 
+  private async commandRename(title: string): Promise<void> {
+    if (title === '') throw new Error('用法：/rename <title>')
+    const result = value(await this.api.sessions.rename({ sessionId: this.selectedSessionId(), title }))
+    this.update(state => ({
+      ...state,
+      title: result.title,
+      projections: { ...state.projections, title: result.title },
+    }))
+    this.setNotice(`会话已重命名为 ${result.title}`)
+  }
+
+  private async commandFork(input: string): Promise<void> {
+    const atSeq = input === '' ? undefined : Number(input)
+    if (atSeq !== undefined && !Number.isSafeInteger(atSeq)) throw new Error('用法：/fork [event-seq]')
+    const forked = value(await this.api.sessions.fork({
+      sessionId: this.selectedSessionId(), ...(atSeq === undefined ? {} : { atSeq }),
+    }))
+    await this.commandResume(forked.sessionId)
+  }
+
+  /**
+   * Dispatch table for terminal-native commands. Keys mirror the
+   * non-forwarded entries of the command catalog in commands.ts — the
+   * controller.spec drift test asserts the correspondence, so a catalog
+   * entry without a handler (or the reverse) fails the build.
+   */
+  private readonly commandHandlers: Record<string, (rest: string, parts: string[]) => Promise<void> | void> = {
+    '/help': () => { this.showOverlay('TUI 命令', helpLines()) },
+    '/status': () => { this.commandStatus() },
+    '/close': () => { this.closeOverlay() },
+    '/sessions': rest => this.commandSessions(rest),
+    '/new': rest => this.commandNew(rest),
+    '/resume': rest => this.commandResume(rest),
+    '/rename': rest => this.commandRename(rest),
+    '/fork': rest => this.commandFork(rest),
+    '/older': () => this.commandOlder(),
+    '/models': () => this.commandModels(),
+    '/model': (_rest, parts) => this.commandModel(parts[0] ?? '', parts[1]),
+    '/effort': () => this.commandEffort(),
+    '/queue': () => { this.commandQueue() },
+    '/queue-edit': rest => this.commandQueueEdit(rest),
+    '/queue-remove': rest => this.commandQueueRemove(rest),
+    '/queue-steer': rest => this.commandQueueSteer(rest),
+    '/jobs': () => { this.commandJobs() },
+    '/job-kill': rest => this.commandJobKill(rest),
+    '/presets': () => this.commandPresets(),
+    '/preset': rest => this.commandPreset(rest),
+    '/preset-read': rest => this.commandPresetRead(rest),
+    '/preset-copy': rest => this.commandPresetCopy(rest),
+    '/preset-open': rest => this.commandPresetOpen(rest),
+    '/preset-remove': rest => this.commandPresetRemove(rest),
+    '/workspaces': () => this.commandWorkspaces(),
+    '/workspace-new': rest => this.commandWorkspaceNew(rest),
+    '/workspace-rename': rest => this.commandWorkspaceRename(rest),
+    '/workspace-delete': rest => this.commandWorkspaceDelete(rest),
+    '/workspace-move': rest => this.commandWorkspaceMove(rest),
+    '/workspace-session-move': rest => this.commandWorkspaceSessionMove(rest),
+    '/archive': rest => this.commandArchive(rest),
+    '/skills': () => this.commandSkills(),
+    '/subagents': () => this.commandSubagents(),
+    '/subagent': rest => this.commandSubagent(rest),
+    '/back': () => this.commandBack(),
+    '/settings': () => this.commandSettings(),
+    '/settings-show': rest => this.commandSettingsShow(rest),
+    '/settings-open': () => this.commandSettingsOpen(),
+    '/settings-set': rest => this.commandSettingsSet(rest),
+    '/settings-unset': rest => this.commandSettingsUnset(rest),
+    '/settings-reset': rest => this.commandSettingsReset(rest),
+    '/goal-show': () => { this.commandGoalShow() },
+    '/goal-edit': rest => this.commandGoalEdit(rest),
+    '/goal-pause': () => this.commandGoalAction('pause'),
+    '/goal-resume': () => this.commandGoalAction('resume'),
+    '/goal-complete': () => this.commandGoalAction('complete'),
+    '/goal-clear': rest => this.commandGoalClear(rest),
+    '/providers': () => this.commandProviders(),
+    '/provider-models': rest => this.commandProviderModels(rest),
+    '/discover-models': rest => this.commandDiscoverModels(rest),
+    '/provider-add': rest => this.commandProviderAdd(rest),
+    '/credentials': rest => this.commandCredentials(rest),
+    '/credential-set': rest => this.commandCredentialSet(rest),
+    '/credential-unset': rest => this.commandCredentialUnset(rest),
+    '/directories': rest => this.commandDirectories(rest),
+    '/mkdir': rest => this.commandMkdir(rest),
+    '/open': rest => this.commandOpen(rest),
+    '/plugins': () => { this.commandPlugins() },
+    '/cordis': () => { this.commandCordis() },
+    '/cordis-run': rest => this.commandCordisRun(rest),
+    '/cordis-stop': rest => this.commandCordisStop(rest),
+    '/cordis-remove': rest => this.commandCordisRemove(rest),
+    '/feedback': rest => this.commandFeedback(rest),
+    '/feedback-clear': rest => this.commandFeedbackClear(rest),
+    '/image': rest => this.commandImage(rest, 'queue'),
+    '/image-steer': rest => this.commandImage(rest, 'steer'),
+    '/save-image': rest => this.commandSaveImage(rest),
+    '/export': rest => this.commandExport(rest),
+    '/host': () => this.commandHost(),
+    '/permission': rest => this.commandPermission(rest),
+  }
+
   private async runLocalCommand(text: string): Promise<boolean> {
     const [rawCommand = '', ...parts] = text.trim().split(/\s+/)
     const command = rawCommand.toLowerCase()
     const rest = text.trim().slice(rawCommand.length).trim()
-    const local = new Set([
-      '/help', '/status', '/close', '/sessions', '/new', '/resume', '/rename', '/fork', '/older', '/models', '/model', '/effort',
-      '/queue', '/queue-edit', '/queue-remove', '/queue-steer',
-      '/jobs', '/job-kill',
-      '/presets', '/preset', '/preset-read', '/preset-copy', '/preset-open', '/preset-remove',
-      '/workspaces', '/workspace-new', '/workspace-rename', '/workspace-delete', '/workspace-move',
-      '/workspace-session-move', '/archive', '/skills', '/subagents', '/subagent', '/back',
-      '/settings', '/settings-show', '/settings-open', '/settings-set', '/settings-unset', '/settings-reset',
-      '/goal-show', '/goal-edit', '/goal-pause', '/goal-resume', '/goal-complete', '/goal-clear',
-      '/providers', '/provider-models', '/discover-models', '/provider-add', '/credentials', '/credential-set', '/credential-unset',
-      '/directories', '/mkdir', '/open', '/plugins',
-      '/cordis', '/cordis-run', '/cordis-stop', '/cordis-remove',
-      '/feedback', '/feedback-clear', '/image', '/image-steer', '/save-image', '/export', '/host',
-      '/permission',
-    ])
-    if (!local.has(command)) return false
+    const handler = this.commandHandlers[command]
+    if (handler === undefined) return false
     try {
-      switch (command) {
-        case '/help':
-          this.showOverlay('TUI 命令', [
-            '/sessions [query]  方向键选择或搜索会话',
-            '/new [cwd]          新建并切换会话',
-            '/resume [id]        方向键选择，或按 id/唯一前缀切换',
-            '/rename <title>     重命名当前会话',
-            '/fork [seq]         从当前会话分叉并切换',
-            '/older              加载更早的 100 条消息',
-            '/models             方向键选择模型',
-            '/model [p/m] [r]    方向键选择或直接切换模型',
-            '/effort             方向键设置当前模型的思考级别',
-            '/queue · /queue-edit · /queue-remove · /queue-steer',
-            '/jobs · /job-kill <id> --yes  查看/停止后台任务',
-            '/presets · /preset  方向键选择或直接切换 preset',
-            '/preset-read|copy|open|remove',
-            '/workspaces · /workspace-new|rename|delete|move',
-            '/archive · /subagents · /subagent · /back  方向键选择子代理',
-            '/settings · /settings-show  方向键选择 namespace',
-            '/settings-open|set|unset|reset',
-            '/goal-show|edit|pause|resume|complete|clear',
-            '/providers · /provider-models  方向键选择 provider/model',
-            '/discover-models',
-            '/provider-add  使用 Host 目录配置已有 provider，或通过 llm-pi-ai 新增自定义 route',
-            '/credentials · /credential-set|unset',
-            '/feedback · /feedback-clear',
-            '/directories · /mkdir · /open · /plugins',
-            '/cordis · /cordis-run|stop|remove',
-            '/image · /image-steer · /save-image · /export',
-            '/skills · /host · /status',
-            'Ctrl+Shift+E  展开最近的折叠行（上下文/skill 目录、工具详情等）；再按展开更早的，全开后按一下重新全部折叠',
-            'Ctrl+T        展开/折叠 todo 清单（非折叠时显示进度和当前正在执行的项）',
-            '/permission          方向键选择权限模式',
-            '/goal <objective> · /plan · /compact  交给 Harness',
-            '/close              关闭当前面板',
-            '其他 /command       交给 Harness 命令或 skill',
-          ])
-          break
-        case '/status': this.commandStatus(); break
-        case '/close': this.closeOverlay(); break
-        case '/sessions': await this.commandSessions(rest); break
-        case '/new': await this.commandNew(rest); break
-        case '/resume': await this.commandResume(rest); break
-        case '/rename': {
-          if (rest === '') throw new Error('用法：/rename <title>')
-          const result = value(await this.api.sessions.rename({ sessionId: this.selectedSessionId(), title: rest }))
-          this.update(state => ({
-            ...state,
-            title: result.title,
-            projections: { ...state.projections, title: result.title },
-          }))
-          this.setNotice(`会话已重命名为 ${result.title}`)
-          break
-        }
-        case '/fork': {
-          const atSeq = rest === '' ? undefined : Number(rest)
-          if (atSeq !== undefined && !Number.isSafeInteger(atSeq)) throw new Error('用法：/fork [event-seq]')
-          const forked = value(await this.api.sessions.fork({
-            sessionId: this.selectedSessionId(), ...(atSeq === undefined ? {} : { atSeq }),
-          }))
-          await this.commandResume(forked.sessionId)
-          break
-        }
-        case '/older': await this.commandOlder(); break
-        case '/models': await this.commandModels(); break
-        case '/model': await this.commandModel(parts[0] ?? '', parts[1]); break
-        case '/effort': await this.commandEffort(); break
-        case '/queue': this.commandQueue(); break
-        case '/queue-edit': await this.commandQueueEdit(rest); break
-        case '/queue-remove': await this.commandQueueRemove(rest); break
-        case '/queue-steer': await this.commandQueueSteer(rest); break
-        case '/jobs': this.commandJobs(); break
-        case '/job-kill': await this.commandJobKill(rest); break
-        case '/presets': await this.commandPresets(); break
-        case '/preset': await this.commandPreset(rest); break
-        case '/preset-read': await this.commandPresetRead(rest); break
-        case '/preset-copy': await this.commandPresetCopy(rest); break
-        case '/preset-open': await this.commandPresetOpen(rest); break
-        case '/preset-remove': await this.commandPresetRemove(rest); break
-        case '/workspaces': await this.commandWorkspaces(); break
-        case '/workspace-new': await this.commandWorkspaceNew(rest); break
-        case '/workspace-rename': await this.commandWorkspaceRename(rest); break
-        case '/workspace-delete': await this.commandWorkspaceDelete(rest); break
-        case '/workspace-move': await this.commandWorkspaceMove(rest); break
-        case '/workspace-session-move': await this.commandWorkspaceSessionMove(rest); break
-        case '/archive': await this.commandArchive(rest); break
-        case '/skills': await this.commandSkills(); break
-        case '/subagents': await this.commandSubagents(); break
-        case '/subagent': await this.commandSubagent(rest); break
-        case '/back': await this.commandBack(); break
-        case '/settings': await this.commandSettings(); break
-        case '/settings-show': await this.commandSettingsShow(rest); break
-        case '/settings-open': await this.commandSettingsOpen(); break
-        case '/settings-set': await this.commandSettingsSet(rest); break
-        case '/settings-unset': await this.commandSettingsUnset(rest); break
-        case '/settings-reset': await this.commandSettingsReset(rest); break
-        case '/goal-show': this.commandGoalShow(); break
-        case '/goal-edit': await this.commandGoalEdit(rest); break
-        case '/goal-pause': await this.commandGoalAction('pause'); break
-        case '/goal-resume': await this.commandGoalAction('resume'); break
-        case '/goal-complete': await this.commandGoalAction('complete'); break
-        case '/goal-clear': await this.commandGoalClear(rest); break
-        case '/providers': await this.commandProviders(); break
-        case '/provider-models': await this.commandProviderModels(rest); break
-        case '/discover-models': await this.commandDiscoverModels(rest); break
-        case '/provider-add': await this.commandProviderAdd(rest); break
-        case '/credentials': await this.commandCredentials(rest); break
-        case '/credential-set': await this.commandCredentialSet(rest); break
-        case '/credential-unset': await this.commandCredentialUnset(rest); break
-        case '/directories': await this.commandDirectories(rest); break
-        case '/mkdir': await this.commandMkdir(rest); break
-        case '/open': await this.commandOpen(rest); break
-        case '/plugins': this.commandPlugins(); break
-        case '/cordis': this.commandCordis(); break
-        case '/cordis-run': await this.commandCordisRun(rest); break
-        case '/cordis-stop': await this.commandCordisStop(rest); break
-        case '/cordis-remove': await this.commandCordisRemove(rest); break
-        case '/feedback': await this.commandFeedback(rest); break
-        case '/feedback-clear': await this.commandFeedbackClear(rest); break
-        case '/image': await this.commandImage(rest, 'queue'); break
-        case '/image-steer': await this.commandImage(rest, 'steer'); break
-        case '/save-image': await this.commandSaveImage(rest); break
-        case '/export': await this.commandExport(rest); break
-        case '/host': await this.commandHost(); break
-        case '/permission': await this.commandPermission(rest); break
-      }
+      await handler(rest, parts)
     } catch (error) {
       this.setNotice(`命令失败：${message(error)}`)
     }
@@ -2084,16 +1988,13 @@ export class TuiController {
         this.setNotice('已向 continuable subagent 提交消息')
         return true
       }
-      const response = await this.api.sessions.prompt({
+      const response = value(await this.api.sessions.prompt({
         sessionId,
         mode,
         content: [{ type: 'text', text: normalized }],
         ...(timeZone === undefined ? {} : { clientTimeZone: timeZone }),
-      })
-      const sendError = failure(response)
-      if (sendError !== undefined) throw sendError
-      if (!response.result.ok) throw new Error('unreachable')
-      this.setNotice(response.result.value.command?.text)
+      }))
+      this.setNotice(response.command?.text)
       return true
     } catch (error) {
       this.setNotice(`发送失败：${message(error)}`)

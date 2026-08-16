@@ -224,25 +224,13 @@ export class InProcessApiClient extends ApiClientBase {
     return this.api.respond(message)
   }
 
-  protected openMux(payload: {}, signal: AbortSignal, onOpen?: () => void): AsyncIterable<RpcRequest<MuxFrame>> {
-    return this.openDirectMux(payload, signal, onOpen)
-  }
-
-  protected openHost(payload: {}, signal: AbortSignal, onOpen?: () => void): AsyncIterable<RpcRequest<HostFrame>> {
-    return this.openDirectHost(payload, signal, onOpen)
-  }
-
-  private async *openDirectMux(
-    payload: {}, signal: AbortSignal, onOpen?: () => void,
-  ): AsyncGenerator<RpcRequest<MuxFrame>> {
+  protected async *openMux(payload: {}, signal: AbortSignal, onOpen?: () => void): AsyncGenerator<RpcRequest<MuxFrame>> {
     const stream = this.api.events.mux({ rpcId: mintRpcId(), payload }, signal)
     onOpen?.()
     yield* stream
   }
 
-  private async *openDirectHost(
-    payload: {}, signal: AbortSignal, onOpen?: () => void,
-  ): AsyncGenerator<RpcRequest<HostFrame>> {
+  protected async *openHost(payload: {}, signal: AbortSignal, onOpen?: () => void): AsyncGenerator<RpcRequest<HostFrame>> {
     const stream = this.api.events.host({ rpcId: mintRpcId(), payload }, signal)
     onOpen?.()
     yield* stream

@@ -37,5 +37,5 @@ TUI profile 仍会挂载本地 Host plane，因此同一个独立安装的组合
 - 两个客户端使用共享 Host 时，Web 会立即收到 TUI 创建的 workspace 归属和后续 session 事件。
 - 自定义 Web 端口需要传入 `--connect`；默认探测刻意只覆盖随附 loopback origin。
 - standalone TUI 保持隔离，不能与 Web 针对相同 Harness home 并发运行。
-- Host 本地 download、message feedback、plugin inventory 与 dynamic Cordis control 仍无法通过远程 `IApiClient` 使用；TUI 会报告对应命令不可用，而不会调用自身的本地 Host。
+- Host 本地 download、message feedback、plugin inventory、dynamic Cordis control 与后台任务停止仍无法通过远程 `IApiClient` 使用；TUI 会报告对应命令不可用，而不会调用自身的本地 Host。
 - 远程特权配置调用继续遵循 Web carrier 的 trust policy。loopback 连接可以使用这些调用；非 loopback 部署仍受 Host 已配置 authority 限制。

@@ -10,17 +10,16 @@ import {
   type TuiPickerItem, type TuiProviderWizard, type TuiViewState,
 } from './model.ts'
 import { providerSetupRows, providerSetupValidation, type ProviderSetupField } from './provider-setup.ts'
+import { formatCompact, oneLine, shorten } from './format.ts'
 import { ansi, editorTheme, markdownTheme, selectListTheme } from './theme.ts'
 
 const OSC133_PROMPT_START = '\u001B]133;A\u0007'
 
-function shorten(value: string | undefined, maximum: number): string {
-  if (value === undefined || value === '') return '—'
-  return value.length <= maximum ? value : `…${value.slice(-(maximum - 1))}`
-}
-
-function oneLine(value: string): string {
-  return value.replaceAll(/\s*\n\s*/gu, ' ').trim()
+/** Change-detection signature for a list of picker/menu items. */
+function itemsSignature(items: readonly { value: string; label?: string | undefined; description?: string | undefined }[]): string {
+  return items
+    .map(item => `${item.value}\u0001${item.label ?? ''}\u0001${item.description ?? ''}`)
+    .join('\u0002')
 }
 
 const THINKING_LABEL = '思考中'
@@ -45,12 +44,6 @@ function reasoningTail(text: string, width: number, maximum: number): string[] {
 function limitedLines(value: string, maximum: number): string {
   const lines = value.split('\n')
   return lines.length <= maximum ? value : `${lines.slice(0, maximum).join('\n')}\n… ${String(lines.length - maximum)} 行已折叠`
-}
-
-function formatCount(value: number): string {
-  return value >= 1_000_000
-    ? `${(value / 1_000_000).toFixed(1)}m`
-    : value >= 1_000 ? `${(value / 1_000).toFixed(1)}k` : String(value)
 }
 
 function projectedGoal(state: TuiViewState): { objective: string; phase: string } | undefined {
@@ -378,7 +371,7 @@ class QuestionPicker implements Component, Focusable {
     }
     this.editorBox = new PromptEditor(this.editor)
     this.list = new SelectList([], 8, selectListTheme)
-    this.updateList([], this.actions)
+    this.updateList([])
   }
 
   /**
@@ -395,20 +388,20 @@ class QuestionPicker implements Component, Focusable {
       description: option.description,
     }))
     items.push({ value: CUSTOM_ANSWER_VALUE, label: `${ansi.bold('✎ 其他 / 自定义…')}` })
-    this.updateList(items, this.actions)
+    this.updateList(items)
   }
 
-  private updateList(items: SelectItem[], actions: QuestionPickerActions): void {
-    const signature = items.map(item => `${item.value}\u0001${item.description ?? ''}`).join('\u0002')
+  private updateList(items: SelectItem[]): void {
+    const signature = itemsSignature(items)
     if (this.optionsSignature === signature) return
     this.optionsSignature = signature
     this.mode = 'select'
     this.editor.setText('')
     this.list = new SelectList(items, 8, selectListTheme)
-    this.list.onCancel = () => { if (this.mode === 'select') actions.cancel() }
+    this.list.onCancel = () => { if (this.mode === 'select') this.actions.cancel() }
     this.list.onSelect = item => {
       if (item.value === CUSTOM_ANSWER_VALUE) this.enterCustom()
-      else actions.chooseOption(item.value)
+      else this.actions.chooseOption(item.value)
     }
   }
 
@@ -517,7 +510,7 @@ class QuestionReview implements Component, Focusable {
       }
     })
     rows.push({ value: REVIEW_CONFIRM_VALUE, label: `${ansi.bold('✅ 确认提交全部回答')}` })
-    const signature = rows.map(row => `${row.value}\u0001${row.label}\u0001${row.description ?? ''}`).join('\u0002')
+    const signature = itemsSignature(rows)
     if (this.signature === signature) return
     this.signature = signature
     this.list = new SelectList(rows, 8, selectListTheme)
@@ -570,7 +563,7 @@ class ProviderSearchPicker implements Component, Focusable {
   }
 
   update(picker: TuiPicker): void {
-    const signature = picker.items.map(item => `${item.value}\u0001${item.label}\u0001${item.description ?? ''}`).join('\u0002')
+    const signature = itemsSignature(picker.items)
     if (signature === this.signature) return
     this.signature = signature
     this.items = picker.items
@@ -648,7 +641,7 @@ class ProviderWizardPicker implements Component, Focusable {
   private rowsSignature = ''
   private editPrompt = ''
 
-  constructor(_tui: TUI, private readonly actions: ProviderWizardActions) {
+  constructor(private readonly actions: ProviderWizardActions) {
     this.input = new Input()
     this.input.onSubmit = text => {
       if (this.editingRow !== undefined) this.actions.submitValue(this.editingRow, text)
@@ -678,7 +671,7 @@ class ProviderWizardPicker implements Component, Focusable {
 
   /** Rebuild the menu list when rows change; keeps selection on unrelated updates. */
   private updateList(rows: SelectItem[]): void {
-    const signature = rows.map(row => `${row.value}\u0001${row.label}\u0001${row.description ?? ''}`).join('\u0002')
+    const signature = itemsSignature(rows)
     if (this.rowsSignature === signature) return
     const selected = this.list.getSelectedItem()?.value
     this.rowsSignature = signature
@@ -799,8 +792,22 @@ export interface TerminalViewActions {
   chooseProviderWizardRow(row: number): void
   submitProviderWizardValue(field: ProviderSetupField, text: string): void
   cancelProviderWizard(): void
-  backProviderWizardToMenu(): void
 }
+
+/** Structured-question flow position consumed by the terminal view. */
+export interface QuestionFlowSnapshot {
+  /** Index of the question currently being answered. */
+  index: number
+  /** Whether the batch shows the confirmation summary. */
+  reviewing: boolean
+  /** Whether an answer submission is in flight. */
+  submitting: boolean
+  /** Answers accumulated so far in this batch. */
+  answers: AskUserQuestionAnswerItem[]
+}
+
+/** Neutral flow position used before any question request arrives. */
+const EMPTY_QUESTION_FLOW: QuestionFlowSnapshot = { index: 0, reviewing: false, submitting: false, answers: [] }
 
 /** Retained pi-tui layout whose components observe immutable controller snapshots. */
 export class TerminalView {
@@ -823,8 +830,7 @@ export class TerminalView {
   private readonly questionReview: QuestionReview
   private readonly providerWizardPicker: ProviderWizardPicker
   private readonly providerSearchPicker: ProviderSearchPicker
-  private questionReviewing = false
-  private questionAnswers: AskUserQuestionAnswerItem[] = []
+  private question: QuestionFlowSnapshot = EMPTY_QUESTION_FLOW
   private pickerSignature = ''
   private picker: SelectList | undefined
 
@@ -834,7 +840,7 @@ export class TerminalView {
     this.questionEditor = new Editor(tui, editorTheme, { paddingX: 0 })
     this.editorBox = new PromptEditor(this.editor)
     this.questionEditorBox = new PromptEditor(this.questionEditor)
-    this.providerWizardPicker = new ProviderWizardPicker(tui, {
+    this.providerWizardPicker = new ProviderWizardPicker({
       choose: row => this.actions.chooseProviderWizardRow(row),
       submitValue: (row, text) => this.actions.submitProviderWizardValue(row, text),
       cancel: () => this.actions.cancelProviderWizard(),
@@ -868,24 +874,17 @@ export class TerminalView {
       { component: this.composer, basis: 'auto', shrink: 1, minSize: 3, maxSize: 18 },
       { component: this.status, basis: 'auto', shrink: 0, minSize: 1, maxSize: 2 },
     ])
-    this.update(state, 0, false, false, [])
+    this.update(state, EMPTY_QUESTION_FLOW)
   }
 
-  update(
-    state: TuiViewState,
-    questionIndex: number,
-    questionReviewing: boolean,
-    questionSubmitting: boolean,
-    questionAnswers: AskUserQuestionAnswerItem[],
-  ): void {
+  update(state: TuiViewState, question: QuestionFlowSnapshot): void {
     this.state = state
-    this.questionReviewing = questionReviewing
-    this.questionAnswers = questionAnswers
+    this.question = question
     this.document.update(state)
     this.notice.update(state)
     this.activity.update(state)
     this.status.update(state)
-    this.updateComposer(questionIndex, questionSubmitting)
+    this.updateComposer()
   }
 
   invalidate(): void {
@@ -898,11 +897,16 @@ export class TerminalView {
     this.activity.invalidate()
   }
 
-  private updateComposer(questionIndex: number, questionSubmitting: boolean): void {
+  /** Drop the retained generic picker so the next picker state rebuilds it. */
+  private clearPicker(): void {
+    this.pickerSignature = ''
+    this.picker = undefined
+  }
+
+  private updateComposer(): void {
     const wizard = this.state.providerWizard
     if (wizard !== undefined) {
-      this.pickerSignature = ''
-      this.picker = undefined
+      this.clearPicker()
       this.providerWizardPicker.update(wizard, wizard.editing)
       this.composer.set([
         new Text(ansi.magenta(ansi.bold(wizard.kind === 'custom'
@@ -915,8 +919,7 @@ export class TerminalView {
     }
     const interaction = this.state.interaction
     if (interaction?.kind === 'approval') {
-      this.pickerSignature = ''
-      this.picker = undefined
+      this.clearPicker()
       this.composer.set([
         new Text(ansi.yellow(ansi.bold(`需要授权 · ${interaction.toolName}`)), 1, 0),
         ...(interaction.reason === undefined ? [] : [new Text(interaction.reason, 1, 0)]),
@@ -925,13 +928,12 @@ export class TerminalView {
       return
     }
     if (interaction?.kind === 'question') {
-      this.pickerSignature = ''
-      this.picker = undefined
+      this.clearPicker()
       // After the last question the batch moves to a confirmation summary that
       // lists every "question → answer"; the user confirms all or revisits any
       // single entry before the answer is sent to the host.
-      if (this.questionReviewing) {
-        this.questionReview.update(interaction.questions, this.questionAnswers)
+      if (this.question.reviewing) {
+        this.questionReview.update(interaction.questions, this.question.answers)
         this.composer.set([
           new Text(ansi.green(ansi.bold('请确认你的回答')), 1, 0),
           this.questionReview,
@@ -939,12 +941,12 @@ export class TerminalView {
         ], this.questionReview)
         return
       }
-      const question = interaction.questions[questionIndex]
+      const question = interaction.questions[this.question.index]
       if (question === undefined) {
         this.composer.set([new Text(ansi.yellow('正在提交回答…'), 1, 0)])
         return
       }
-      const prompt = questionComponents(question, questionIndex, interaction.questions.length, false)
+      const prompt = questionComponents(question, this.question.index, interaction.questions.length, false)
       // Single-select with options becomes an arrow-navigable menu with a typed
       // custom-answer fallback; multi-select or option-less questions keep the
       // number/custom-text editor.
@@ -953,8 +955,8 @@ export class TerminalView {
         this.composer.set([...prompt, this.questionPicker], this.questionPicker)
         return
       }
-      const numberedPrompt = questionComponents(question, questionIndex, interaction.questions.length, true)
-      this.questionEditor.disableSubmit = questionSubmitting
+      const numberedPrompt = questionComponents(question, this.question.index, interaction.questions.length, true)
+      this.questionEditor.disableSubmit = this.question.submitting
       this.composer.set([
         ...numberedPrompt,
         this.questionEditorBox,
@@ -965,8 +967,7 @@ export class TerminalView {
     this.editor.disableSubmit = false
     const picker = this.state.picker
     if (picker?.kind === 'provider-setup') {
-      this.pickerSignature = ''
-      this.picker = undefined
+      this.clearPicker()
       this.providerSearchPicker.update(picker)
       this.composer.set([
         new Text(ansi.magenta(ansi.bold('选择要配置的 Provider')), 1, 0),
@@ -975,7 +976,7 @@ export class TerminalView {
       return
     }
     if (picker !== undefined) {
-      const signature = `${picker.kind}\u0000${picker.title}\u0000${picker.current ?? ''}\u0000${picker.items.map(item => `${item.value}\u0001${item.label}\u0001${item.description ?? ''}`).join('\u0002')}`
+      const signature = `${picker.kind}\u0000${picker.title}\u0000${picker.current ?? ''}\u0000${itemsSignature(picker.items)}`
       if (signature !== this.pickerSignature) {
         this.pickerSignature = signature
         this.picker = new SelectList(picker.items, 8, selectListTheme)
@@ -990,8 +991,7 @@ export class TerminalView {
       ], this.picker)
       return
     }
-    this.pickerSignature = ''
-    this.picker = undefined
+    this.clearPicker()
     this.composer.set([this.editorBox], this.editorBox)
   }
 }
@@ -1126,6 +1126,7 @@ function renderActivity(state: TuiViewState, expanded: boolean): string[] {
 
 function renderStatus(state: TuiViewState, width: number): string[] {
   const status = projectionStatus(state.projections)
+  const liveJobCount = state.jobs.filter(isLiveJob).length
   const phase = state.phase === 'loading' ? '正在连接' : state.phase === 'error' ? '启动失败' : state.running ? '执行中' : '就绪'
   const phaseLabel = state.phase === 'error'
     ? ansi.red(`● ${phase}`)
@@ -1148,11 +1149,11 @@ function renderStatus(state: TuiViewState, width: number): string[] {
     state.reasoningEffort,
     state.cwd === undefined ? undefined : ansi.dim(shorten(state.cwd, Math.max(18, Math.floor(width / 3)))),
     status.session === undefined ? undefined : `${String(status.session.turns)} 轮 · ${String(status.session.steps)} 步`,
-    status.tokens === undefined ? undefined : `↑${formatCount(status.tokens.input)} ↓${formatCount(status.tokens.output)}`,
+    status.tokens === undefined ? undefined : `↑${formatCompact(status.tokens.input)} ↓${formatCompact(status.tokens.output)}`,
     context,
-    contextWindow === undefined ? undefined : formatCount(contextWindow),
+    contextWindow === undefined ? undefined : formatCompact(contextWindow),
     state.queueSize > 0 ? `队列 ${String(state.queueSize)}` : undefined,
-    state.jobs.some(isLiveJob) ? `任务 ${String(state.jobs.filter(isLiveJob).length)}` : undefined,
+    liveJobCount > 0 ? `任务 ${String(liveJobCount)}` : undefined,
     status.permission === undefined ? undefined : ansi.cyan(shorten(status.permission, 18)),
     plan,
   ].filter(value => value !== undefined), width)

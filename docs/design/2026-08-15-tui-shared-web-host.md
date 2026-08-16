@@ -37,5 +37,5 @@ Rejected. A shipped profile template or launcher branch would make the TUI part 
 - Web receives TUI-created workspace membership and later session events immediately when both clients use the shared Host.
 - A custom Web port requires `--connect`; the default probe is intentionally limited to the shipped loopback origin.
 - Standalone TUI remains isolated and must not run concurrently with Web against the same Harness home.
-- Host-local downloads, message feedback, plugin inventory, and dynamic Cordis control remain unavailable through the remote `IApiClient`; the TUI reports those commands as unavailable instead of invoking its local Host.
+- Host-local downloads, message feedback, plugin inventory, dynamic Cordis control, and background-job kill remain unavailable through the remote `IApiClient`; the TUI reports those commands as unavailable instead of invoking its local Host.
 - Remote privileged configuration calls retain the Web carrier's trust policy. A loopback connection can use them; a non-loopback deployment remains subject to the Host's configured authority restrictions.

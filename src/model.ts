@@ -8,12 +8,16 @@ import type { AskUserQuestionItem } from '@deepseek-ai/dsh-user-questions/types'
 import type { ApprovalRequestId } from '@deepseek-ai/dsh-user-approval/types'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm/types'
 import type { SessionEvent, SessionId, TodoItem } from '@deepseek-ai/dsh-session'
+// Load-bearing type-only imports: these packages augment the SessionEvent union
+// (and its payload types) via module augmentation. Deleting them loses the
+// event types folded below and breaks the typecheck.
 import type {} from '@deepseek-ai/dsh-agent-presets'
 import type {} from '@deepseek-ai/dsh-commands/types'
 import type {} from '@deepseek-ai/dsh-compaction/types'
 import type {} from '@deepseek-ai/dsh-llm-retry/types'
 import type {} from '@deepseek-ai/dsh-tool-workflow/types'
 import type { ProviderSetupDraft } from './provider-setup.ts'
+import { displayJson } from './format.ts'
 
 /** Terminal status shared by tool and workflow rows. */
 export type TranscriptStatus = 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted'
@@ -142,8 +146,11 @@ export interface TuiViewState {
   providerWizard: TuiProviderWizard | undefined
   notice: string | undefined
   lastSeq: number
+  /** In-flight mutation calls; each entry is consumed by its `tool/result`. */
   mutationCalls: Record<string, { turn: number; paths: string[] }>
+  /** Produced paths per open turn; each entry is consumed by its deliverable row. */
   producedFiles: Record<string, string[]>
+  /** Running retries by owning turn; entries are dropped when the turn settles. */
   retryTurns: Record<string, number>
 }
 
@@ -230,15 +237,6 @@ function reasoningText(content: readonly ContentBlock[]): string {
   return content.filter(block => block.type === 'reasoning').map(block => block.text).join('\n')
 }
 
-function json(value: unknown): string {
-  if (typeof value === 'string') return value
-  try {
-    return JSON.stringify(value, undefined, 2)
-  } catch {
-    return String(value)
-  }
-}
-
 function callTitle(event: SessionEvent<'tool/call'>, view: ToolEventView | undefined): string {
   if (view?.for !== 'call') return event.data.name
   return view.view.title
@@ -252,7 +250,7 @@ function callDetail(event: SessionEvent<'tool/call'>, view: ToolEventView | unde
     case 'diff': return intent.diffs.map(diff => diff.path).join(', ')
     case 'generic': {
       const content = intent.content === undefined ? '' : contentText(intent.content, true)
-      return [intent.rawInput === undefined ? '' : json(intent.rawInput), content].filter(Boolean).join('\n') || undefined
+      return [intent.rawInput === undefined ? '' : displayJson(intent.rawInput), content].filter(Boolean).join('\n') || undefined
     }
   }
 }
@@ -302,11 +300,15 @@ function appendRow(state: TuiViewState, row: TranscriptRow): TuiViewState {
   return { ...state, rows: [...state.rows, row] }
 }
 
-function upsertRow(state: TuiViewState, row: TranscriptRow): TuiViewState {
+function upsertRow(
+  state: TuiViewState,
+  row: TranscriptRow,
+  merge?: (current: TranscriptRow) => TranscriptRow,
+): TuiViewState {
   const index = state.rows.findIndex(item => item.id === row.id)
-  return index < 0
-    ? appendRow(state, row)
-    : { ...state, rows: state.rows.toSpliced(index, 1, row) }
+  if (index < 0) return appendRow(state, row)
+  const current = state.rows[index] as TranscriptRow
+  return { ...state, rows: state.rows.toSpliced(index, 1, merge === undefined ? row : merge(current)) }
 }
 
 /**
@@ -395,11 +397,11 @@ export function projectionStatus(projections: Record<string, unknown>): TuiProje
 
   const pressure = object(projections.contextPressure)
   const used = finiteNumber(pressure, 'projectedTokens') ?? finiteNumber(pressure, 'pressureTokens')
-  const window = finiteNumber(pressure, 'contextWindow')
-  if (used !== undefined && window !== undefined && window > 0) {
-    result.context = { used, window, percent: Math.max(0, Math.min(100, Math.round(used / window * 100))) }
+  const contextWindowSize = finiteNumber(pressure, 'contextWindow')
+  if (used !== undefined && contextWindowSize !== undefined && contextWindowSize > 0) {
+    result.context = { used, window: contextWindowSize, percent: Math.max(0, Math.min(100, Math.round(used / contextWindowSize * 100))) }
   }
-  if (window !== undefined && window > 0) result.contextWindow = window
+  if (contextWindowSize !== undefined && contextWindowSize > 0) result.contextWindow = contextWindowSize
 
   const breakdown = object(projections.contextBreakdown)
   const system = finiteNumber(breakdown, 'systemTokens')
@@ -520,8 +522,14 @@ function settleRetries(
   status: Extract<TranscriptStatus, 'completed' | 'failed' | 'interrupted'>,
   seq: number,
 ): TuiViewState {
+  // The turn's retries are settled here once, so their turn bookkeeping is
+  // dropped instead of accumulating for the lifetime of the session.
+  const retryTurns = Object.fromEntries(
+    Object.entries(state.retryTurns).filter(([, retryTurn]) => retryTurn !== turn),
+  )
   return {
     ...state,
+    retryTurns,
     rows: state.rows.map((row) => {
       if (row.kind !== 'retry' || row.status !== 'running') return row
       const retryId = row.id.slice('retry-'.length)
@@ -540,10 +548,14 @@ function interruptRunningTools(state: TuiViewState, seq: number): TuiViewState {
 }
 
 function appendDeliverables(state: TuiViewState, turn: number, seq: number): TuiViewState {
-  const paths = state.producedFiles[String(turn)] ?? []
+  const key = String(turn)
+  const paths = state.producedFiles[key] ?? []
   if (paths.length === 0) return state
-  const id = `deliverables-${String(turn)}`
-  return appendRow({ ...state, rows: state.rows.filter(row => row.id !== id) }, {
+  const id = `deliverables-${key}`
+  // The paths are flushed into the deliverable row, so the per-turn
+  // accumulation entry is consumed here instead of retained forever.
+  const { [key]: _consumed, ...producedFiles } = state.producedFiles
+  return appendRow({ ...state, producedFiles, rows: state.rows.filter(row => row.id !== id) }, {
     id,
     seq,
     kind: 'deliverable',
@@ -574,19 +586,14 @@ function workflowDetail(workflow: WorkflowRun): string {
 }
 
 function projectWorkflowRow(state: TuiViewState, workflow: WorkflowRun, seq: number): TuiViewState {
-  const id = `workflow-${workflow.runId}`
-  const row: TranscriptRow = {
-    id,
+  return upsertRow(state, {
+    id: `workflow-${workflow.runId}`,
     seq,
     kind: 'workflow',
     text: workflow.name,
     detail: workflowDetail(workflow),
     status: workflow.status,
-  }
-  const index = state.rows.findIndex(item => item.id === id)
-  return index < 0
-    ? appendRow(state, row)
-    : { ...state, rows: state.rows.toSpliced(index, 1, row) }
+  })
 }
 
 function updateWorkflow(
@@ -713,8 +720,12 @@ export function applySessionEvent(
     case 'tool/result': {
       if (replacementEvent(event)) return next
       const callId = String(event.data.message.source.callId)
-      const mutation = next.mutationCalls[callId]
-      if (mutation !== undefined && successfulToolResult(event) && mutation.paths.length > 0) {
+      const succeeded = successfulToolResult(event)
+      // The mutation record is consumed by this result; drop it so the map
+      // does not accumulate one entry per tool call for the whole session.
+      const { [callId]: mutation, ...mutationCalls } = next.mutationCalls
+      next = { ...next, mutationCalls }
+      if (mutation !== undefined && succeeded && mutation.paths.length > 0) {
         const key = String(mutation.turn)
         next = {
           ...next,
@@ -725,28 +736,22 @@ export function applySessionEvent(
         }
       }
       const presentation = resultPresentation(event, view)
-      const index = next.rows.findIndex(row => row.callId === callId)
-      const status = successfulToolResult(event) ? 'completed' as const : 'failed' as const
-      if (index < 0) {
-        return appendRow(next, {
-          id: `tool-${callId}`,
-          seq: event.seq,
-          kind: 'tool',
-          text: presentation.title ?? callId,
-          detail: presentation.detail,
-          status,
-          callId,
-        })
-      }
-      const current = next.rows[index] as TranscriptRow
-      const row: TranscriptRow = {
+      const status = succeeded ? 'completed' as const : 'failed' as const
+      return upsertRow(next, {
+        id: `tool-${callId}`,
+        seq: event.seq,
+        kind: 'tool',
+        text: presentation.title ?? callId,
+        detail: presentation.detail,
+        status,
+        callId,
+      }, current => ({
         ...current,
         seq: event.seq,
         text: presentation.title ?? current.text,
         detail: presentation.detail ?? current.detail,
         status,
-      }
-      return { ...next, rows: next.rows.toSpliced(index, 1, row) }
+      }))
     }
     case 'command/run': return upsertRow(next, {
       id: `command-${String(event.data.commandId)}`,
@@ -756,21 +761,20 @@ export function applySessionEvent(
       status: 'running',
     })
     case 'command/done': {
-      const id = `command-${String(event.data.commandId)}`
-      const index = next.rows.findIndex(row => row.id === id)
       const status = event.data.kind === 'success' ? 'completed' as const : 'failed' as const
-      if (index < 0) {
-        return appendRow(next, {
-          id, seq: event.seq, kind: 'command', text: '命令', detail: event.data.text, status,
-        })
-      }
-      const current = next.rows[index] as TranscriptRow
-      return { ...next, rows: next.rows.toSpliced(index, 1, {
+      return upsertRow(next, {
+        id: `command-${String(event.data.commandId)}`,
+        seq: event.seq,
+        kind: 'command',
+        text: '命令',
+        detail: event.data.text,
+        status,
+      }, current => ({
         ...current,
         seq: event.seq,
         detail: event.data.text ?? current.detail,
         status,
-      }) }
+      }))
     }
     case 'compaction/start': {
       const id = event.data.sourceCommandId === undefined

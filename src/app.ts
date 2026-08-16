@@ -1,34 +1,24 @@
 /** Cordis mount for the independent pi-tui terminal application. */
 
 import type { Context } from '@deepseek-ai/cordis'
+import type { AgentRegistry } from '@deepseek-ai/dsh-agent'
 import type { ApiProxy } from '@deepseek-ai/dsh-host-apiproxy'
 import type { DynamicCordisRunnerService } from '@deepseek-ai/dsh-cordis-host-runner'
-import type {
-  CordisDynamicPackageId, CordisDynamicPluginId, DynamicCordisInventoryRow,
-} from '@deepseek-ai/dsh-cordis-host-runner/types'
 import type { PluginInventoryGateway } from '@deepseek-ai/dsh-host-plugin-inventory'
-import type { JobId } from '@deepseek-ai/dsh-jobs'
-import type { SessionId } from '@deepseek-ai/dsh-session'
+import type { MessageFeedbackService } from '@deepseek-ai/dsh-message-feedback'
 import { ProcessTerminal, type Terminal } from '@earendil-works/pi-tui'
+// Load-bearing type-only imports: these packages augment the Cordis Context
+// service registry (ctx.get keys) via module augmentation. Deleting them makes
+// the typed ctx.get('loader') / ctx.get('agents') / … lookups below fall apart.
 import type {} from '@deepseek-ai/cordis-plugin-loader'
 import type {} from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-cmdline'
 import type {} from '@deepseek-ai/dsh-message-feedback'
 import { TuiController } from './controller.ts'
+import { createLocalExtensions } from './extensions.ts'
 import type { Config } from './index.ts'
 import { InProcessApiClient, selectTuiApi } from './remote.ts'
 import { TerminalApplication } from './terminal.ts'
-
-/**
- * Minimal host-side permission-preset service face (the `permissionPresets`
- * service from `dsh-permission-presets`), kept untyped here so the TUI stays
- * decoupled from that optional Host plugin. `set` is the same imperative
- * behind the Host's `/permission` command: it writes the `permission/preset`
- * plus the changed knob events on the session's log.
- */
-interface PermissionPresetLike {
-  set(session: { events: readonly unknown[] }, preset: string): void
-}
 
 export interface TerminalIo {
   stdin: NodeJS.ReadStream
@@ -45,19 +35,11 @@ export const internals: TerminalIo = {
   createTerminal: () => new ProcessTerminal(),
 }
 
-function asSessionId(value: string): SessionId {
-  return value as SessionId
-}
-
-function asJobId(value: string): JobId {
-  return value as JobId
-}
-
 /** Mount the TUI only after the complete profile tree has settled. */
 export function apply(ctx: Context, config: Config): void {
-  const appExit = ctx.get('appExit')
+  const appExit = ctx.get('appExit') as ((code: number) => void) | undefined
   if (appExit === undefined) throw new Error('tui-app: the launcher must provide ctx.appExit before the tree mounts')
-  const runner: DynamicCordisRunnerService | undefined = ctx.get('dynamicCordisRunner')
+  const runner = ctx.get('dynamicCordisRunner') as DynamicCordisRunnerService | undefined
   if (runner === undefined) throw new Error('tui-app: dynamicCordisRunner is required')
   ctx.effect(() => ctx.on('cordis/request-run', (request) => {
     void runner.resolveRequestRun(request.requestId, {
@@ -76,6 +58,7 @@ export function apply(ctx: Context, config: Config): void {
     void (async () => {
       await ctx.get('loader')?.await()
       if (mountAbort.signal.aborted) return
+      // cordis ctx.get is untyped; the casts below are the local type registry.
       const apiProxy = ctx.get('apiProxy') as ApiProxy | undefined
       if (apiProxy === undefined) return
       if (!internals.stdin.isTTY || !internals.stdout.isTTY) {
@@ -83,17 +66,11 @@ export function apply(ctx: Context, config: Config): void {
         appExit(1)
         return
       }
-      const feedback = ctx.get('messageFeedback')
+      const feedback = ctx.get('messageFeedback') as MessageFeedbackService | undefined
       const inventory = ctx.get('pluginInventory') as PluginInventoryGateway | undefined
-      const agents = ctx.get('agents')
+      const agents = ctx.get('agents') as AgentRegistry | undefined
       if (agents === undefined || inventory === undefined) {
         throw new Error('tui-app: agents and pluginInventory are required')
-      }
-      const cordisRows = (): DynamicCordisInventoryRow[] => runner.inventory()
-      const ownedCordis = (sessionId: string, pluginId: string): DynamicCordisInventoryRow => {
-        const row = cordisRows().find(item => item.pluginId === pluginId && item.agentId === sessionId)
-        if (row === undefined) throw new Error(`session ${sessionId} 不持有 dynamic plugin ${pluginId}`)
-        return row
       }
       const localApi = new InProcessApiClient(apiProxy)
       const selected = await selectTuiApi(config, localApi)
@@ -102,72 +79,9 @@ export function apply(ctx: Context, config: Config): void {
         : config
       const controller = new TuiController(
         selected.api,
-        selected.remote ? {} : {
-          downloads: apiProxy.downloads,
-          ...(feedback === undefined ? {} : { feedback }),
-          plugins: { list: () => inventory.list().entries },
-          permission: {
-            set: async (sessionId, preset) => {
-              const permission = ctx.get('permissionPresets') as PermissionPresetLike | undefined
-              if (permission === undefined) throw new Error('Host 未组合权限服务（dsh-permission-presets）')
-              const agent = agents.get(sessionId)
-              if (agent === undefined) throw new Error(`session ${sessionId} 当前没有 live agent`)
-              permission.set(agent.session, preset)
-              return `权限模式已切换为 ${preset}`
-            },
-          },
-          jobs: {
-            kill: async (id, reason) => {
-              const jobs = ctx.get('jobs')
-              if (jobs === undefined) throw new Error('Host 未提供背景任务注册表 ctx.jobs')
-              return { status: jobs.kill(asJobId(id), undefined, reason) }
-            },
-          },
-          cordis: {
-            inventory: cordisRows,
-            runHostOnly: async (sessionId, pluginId, requestedPackageId) => {
-              const row = ownedCordis(sessionId, pluginId)
-              const packageId = requestedPackageId
-                ?? row.nextPackageId
-                ?? row.currentPackageId
-                ?? row.packages.at(-1)?.packageId
-              if (packageId === undefined) throw new Error(`dynamic plugin ${pluginId} 没有 package`)
-              const pkg = row.packages.find(item => item.packageId === packageId)
-              if (pkg === undefined) throw new Error(`dynamic plugin ${pluginId} 没有 package ${packageId}`)
-              if (pkg.hasClientHalf) {
-                throw new Error(`package ${packageId} 含浏览器 Client half；TUI 只能运行 host-only package`)
-              }
-              if (!pkg.hasHostHalf) throw new Error(`package ${packageId} 没有 Host half`)
-              const agent = agents.get(asSessionId(sessionId))
-              if (agent === undefined) throw new Error(`session ${sessionId} 当前没有 live agent`)
-              const mode = row.currentPackageId === undefined || row.currentPackageId === packageId ? 'run' : 'update'
-              const result = await runner.runHostHalf(
-                agent,
-                pluginId as CordisDynamicPluginId,
-                packageId as CordisDynamicPackageId,
-                mode,
-                null,
-                false,
-              )
-              if (!result.ok) throw new Error(result.message)
-              return `Cordis ${mode} 已完成：${pluginId}/${packageId}${result.waitingFor.length === 0 ? '' : `；等待 ${result.waitingFor.join(', ')}`}`
-            },
-            stop: async (sessionId, pluginId) => {
-              const agent = agents.get(asSessionId(sessionId))
-              if (agent === undefined) throw new Error(`session ${sessionId} 当前没有 live agent`)
-              const result = await runner.stopFromPanel(agent, pluginId as CordisDynamicPluginId)
-              if (!result.ok && result.reason !== 'not-running') throw new Error(result.message)
-              return result.ok ? `已停止 dynamic plugin ${pluginId}` : `dynamic plugin ${pluginId} 当前未运行`
-            },
-            remove: async (sessionId, pluginId) => {
-              const agent = agents.get(asSessionId(sessionId))
-              if (agent === undefined) throw new Error(`session ${sessionId} 当前没有 live agent`)
-              const result = await runner.undefineFromPanel(agent, pluginId as CordisDynamicPluginId)
-              if (!result.ok) throw new Error(result.message)
-              return `已删除 dynamic plugin ${pluginId} 及其全部 package`
-            },
-          },
-        },
+        selected.remote
+          ? {}
+          : createLocalExtensions(ctx, { apiProxy, agents, inventory, runner, feedback }),
       )
       application = new TerminalApplication(controller, controllerConfig, {
         terminal: internals.createTerminal(),

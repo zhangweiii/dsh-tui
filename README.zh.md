@@ -96,6 +96,6 @@ TUI 自己持有的命令会打开终端原生面板。其他 slash command 仍�
 - **不模拟浏览器 Client half**：终端可以运行 host-only dynamic Cordis package。模型要求运行带浏览器 Client half 的 package 时，TUI 会立即返回可操作的拒绝结果，而不会让 turn 悬挂。
 - **不模拟浏览器外观控制**：DOM component slot、拖放、browser routing，以及 Web theme 或 locale control 属于平台 presentation，而不是 Host domain 行为。TUI 对应使用键盘命令、文件系统路径、终端颜色和进程 locale。
 - **并发展示必须使用共享 Web Host**：默认探测覆盖随附 Web 端口；Web 监听其他端口时需传入 `--connect`。`--standalone` 保留隔离 Host 路径，但不能与 Web 针对同一个 Harness home 并发运行，因为进程本地 domain 事件与 JSON 存储不会跨 Host 进程协调。
-- **部分 Host 本地管理命令仍只支持 standalone 模式**：message feedback、session export、live plugin inventory 与 dynamic Cordis control 刻意位于 `IApiClient` 之外；终端连接 Web Host 时，对应 TUI 命令会报告该能力不可用。聊天、分组、history、model、projection、queue、approval、question、workspace、settings、image、skill、goal 与 subagent 使用远程 Host 约定。
+- **部分 Host 本地管理命令仍只支持 standalone 模式**：message feedback、session export、live plugin inventory、dynamic Cordis control 与后台任务停止（/job-kill）刻意位于 `IApiClient` 之外；终端连接 Web Host 时，对应 TUI 命令会报告该能力不可用。聊天、分组、history、model、projection、queue、approval、question、workspace、settings、image、skill、goal 与 subagent 使用远程 Host 约定。
 - **每个终端只选择一个 session**：其他 session 仍可在 Host 上继续运行，但当前进程一次只渲染一个 transcript，并且面板只保留当前可回答 interaction。
 - **`ctx.appExit` 由启动器持有**：在 `dsh` 外部挂载本组合包时，宿主必须提供有界退出请求。

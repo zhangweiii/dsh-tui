@@ -1,4 +1,9 @@
-/** Slash-command metadata consumed by pi-tui's autocomplete provider. */
+/**
+ * Slash-command catalog: the single source of truth for terminal-native
+ * commands. The dispatch table in controller.ts, the /help overlay, and the
+ * composer autocomplete are all derived from this list — add a command here
+ * and everywhere else follows.
+ */
 
 import type { SlashCommand } from '@earendil-works/pi-tui'
 
@@ -6,6 +11,8 @@ interface CommandDescriptor {
   command: `/${string}`
   description: string
   input?: string
+  /** True when the TUI forwards the command to the Harness unchanged. */
+  forwarded?: boolean
 }
 
 /** TUI-owned commands plus common Harness commands forwarded to the active session. */
@@ -79,11 +86,35 @@ export const TUI_COMMANDS: readonly CommandDescriptor[] = [
   { command: '/save-image', description: '保存会话图片', input: '<attachment-id> [path]' },
   { command: '/export', description: '导出会话', input: '[path] [--descendants]' },
   { command: '/host', description: '查看 Host 信息' },
-  { command: '/goal', description: '创建 Harness 目标', input: '<objective>' },
-  { command: '/plan', description: '切换计划模式' },
   { command: '/permission', description: '切换权限模式', input: '[mode]' },
-  { command: '/compact', description: '压缩上下文' },
+  { command: '/goal', description: '创建 Harness 目标', input: '<objective>', forwarded: true },
+  { command: '/plan', description: '切换计划模式', forwarded: true },
+  { command: '/compact', description: '压缩上下文', forwarded: true },
 ]
+
+/** Commands the TUI owns locally (everything not forwarded to the Harness). */
+export const LOCAL_COMMANDS: readonly CommandDescriptor[] = TUI_COMMANDS.filter(item => item.forwarded !== true)
+
+/** Usage string for one catalog entry, e.g. `/model [provider/model] [reasoning-effort]`. */
+function usage(item: CommandDescriptor): string {
+  return item.input === undefined ? item.command : `${item.command} ${item.input}`
+}
+
+/**
+ * Render the `/help` overlay from the catalog, so help can never drift from
+ * the dispatch table or the autocomplete entries.
+ */
+export function helpLines(): string[] {
+  const width = Math.max(...TUI_COMMANDS.map(item => usage(item).length))
+  const line = (item: CommandDescriptor): string => `${usage(item).padEnd(width)}  ${item.description}${item.forwarded === true ? '（交给 Harness）' : ''}`
+  return [
+    ...LOCAL_COMMANDS.map(line),
+    ...TUI_COMMANDS.filter(item => item.forwarded === true).map(line),
+    'Ctrl+Shift+E  展开最近的折叠行（上下文/skill 目录、工具详情等）；再按展开更早的，全开后按一下重新全部折叠',
+    'Ctrl+T        展开/折叠 todo 清单（非折叠时显示进度和当前正在执行的项）',
+    '其他 /command  交给 Harness 命令或 skill',
+  ]
+}
 
 /** Format the command catalog for pi-tui's built-in slash autocomplete. */
 export function slashCommands(commands: readonly CommandDescriptor[] = TUI_COMMANDS): SlashCommand[] {

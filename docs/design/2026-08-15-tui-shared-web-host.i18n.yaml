@@ -1,5 +1,5 @@
 # Bilingual-pair consistency record: the git blob hash of each side as of the
 # last confirmed-consistent state. Both languages carry equal authority. After
 # editing either side, update both values with `git hash-object docs/design/<file>`.
-2026-08-15-tui-shared-web-host.md: 56326a5af69dc2633c312f9de0e783f09bf265ac
-2026-08-15-tui-shared-web-host.zh.md: ecc7516613b9b1958d5360a943e272238084186d
+2026-08-15-tui-shared-web-host.md: 2817375f812206a09b10b0760d55b6557bc430b8
+2026-08-15-tui-shared-web-host.zh.md: cee588ac4fc6c4712cd41a0880616530bd03583f

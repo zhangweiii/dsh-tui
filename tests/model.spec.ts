@@ -238,7 +238,8 @@ describe('tui view projection', () => {
     expect(state.rows.at(-1)).toMatchObject({
       kind: 'deliverable', text: '1 个文件', detail: 'src/a.ts', status: 'completed',
     })
-    expect(state.producedFiles).toEqual({ 1: ['src/a.ts'] })
+    // Flushed into the deliverable row: per-turn accumulation is consumed, not retained.
+    expect(state.producedFiles).toEqual({})
   })
 
   it('folds durable workflow lifecycle events into one updated terminal row', () => {
