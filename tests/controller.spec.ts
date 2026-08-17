@@ -678,7 +678,7 @@ describe('TuiController', () => {
     await controller.submit('/subagent')
     expect(controller.getSnapshot().picker?.kind).toBe('subagent')
     await controller.choosePicker(CHILD)
-    expect(controller.getSnapshot()).toMatchObject({ sessionId: CHILD, phase: 'ready' })
+    expect(controller.getSnapshot()).toMatchObject({ sessionId: CHILD, phase: 'ready', subagentDepth: 1 })
     expect(controller.getSnapshot().rows.at(-1)?.text).toBe('子代理回答')
     await controller.send('继续检查')
     expect(fake.subagentPrompt).toHaveBeenCalledWith(expect.objectContaining({
@@ -686,7 +686,7 @@ describe('TuiController', () => {
       content: [{ type: 'text', text: '继续检查' }],
     }))
     await controller.submit('/back')
-    expect(controller.getSnapshot().sessionId).toBe(SID)
+    expect(controller.getSnapshot()).toMatchObject({ sessionId: SID, subagentDepth: 0 })
     controller.dispose()
   })
 

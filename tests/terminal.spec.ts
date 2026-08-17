@@ -893,4 +893,53 @@ describe('pi-tui terminal application', () => {
     expect(terminal.writes.join('')).toContain('\u001B[?1049h')
     expect(terminal.writes.join('')).toContain('\u001B[?1049l')
   })
+
+  it('boxes fenced code blocks in assistant rows instead of showing raw fences', async () => {
+    const terminal = new TestTerminal(100, 26)
+    const controller = new TestController({
+      rows: [{
+        id: 'assistant-1', seq: 1, kind: 'assistant', text: '下面是一个示例：\n\n```ts\nconst x = 1\nconsole.log(x)\n```\n\n说明文字。',
+      }] as never,
+    })
+    const application = new TerminalApplication(controller.asController(), { continueLatest: false }, { terminal })
+    application.start()
+    await settle(terminal)
+
+    const viewport = terminal.viewport()
+    expect(viewport).toContain('┌─ ts')
+    expect(viewport).toContain('└─')
+    expect(viewport).toContain('const x = 1')
+    expect(viewport).toContain('console.log(x)')
+    expect(viewport).not.toContain('```ts')
+    expect(viewport).not.toContain('```\n')
+    application.stop()
+  })
+
+  it('boxes user-sent code blocks and streamed fences instead of raw text', async () => {
+    const terminal = new TestTerminal(100, 26)
+    const controller = new TestController({
+      rows: [{ id: 'user-1', seq: 0, kind: 'user', text: '请运行：\n\n```bash\nls -la\n```' }] as never,
+      running: true,
+    })
+    const application = new TerminalApplication(controller.asController(), { continueLatest: false }, { terminal })
+    application.start()
+    await settle(terminal)
+
+    let viewport = terminal.viewport()
+    expect(viewport).toContain('┌─ bash')
+    expect(viewport).toContain('ls -la')
+    expect(viewport).not.toContain('```bash')
+
+    // The streamed tail keeps only the freshest lines: closing box and code
+    // stay visible while the raw opening fence never appears on screen.
+    controller.publish({ partialText: '```ts\nconst a = 1\nconsole.log(a)\n```' })
+    await settle(terminal)
+    viewport = terminal.viewport()
+    expect(viewport).toContain('const a = 1')
+    expect(viewport).toContain('console.log(a)')
+    expect(viewport).toContain('└─')
+    expect(viewport).not.toContain('```')
+    expect(viewport).not.toContain('partialText')
+    application.stop()
+  })
 })

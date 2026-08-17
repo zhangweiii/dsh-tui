@@ -104,6 +104,47 @@ const CARD_LABELS: Partial<Record<TranscriptRow['kind'], string>> = {
 const COLLAPSED_MARKER = '▸'
 const EXPANDED_MARKER = '▾'
 
+/** Clip a Markdown block after a fixed number of lines within the given width. */
+function markdownTail(text: string, width: number, maximum: number): string[] {
+  // Budget the source first so a long stream does not re-parse the whole reply
+  // on every chunk; the freshest lines stay visible, like the reasoning tail.
+  const budget = Math.max(1, width * maximum)
+  const suffix = text.length <= budget ? text : `…${text.slice(-Math.max(1, budget - 1))}`
+  const rendered = new Markdown(suffix, 1, 0, markdownTheme, undefined, { preserveOrderedListMarkers: true })
+    .render(width)
+    .map(line => line.trimEnd())
+  return codeBlockBox(rendered).filter(line => line.trim() !== '').slice(-maximum)
+}
+
+/**
+ * Replace literal ``` fence markers with box-drawing code-block borders, so a
+ * fenced block renders as an actual code block instead of raw markdown text.
+ * Detection is order-aware so language-less blocks (whose opening ``` looks
+ * identical to a closing one) still open and close correctly.
+ * @param lines - Rendered terminal lines, e.g. from a pi-tui `Markdown`.
+ * @returns The same lines with code-block borders boxed up.
+ */
+function codeBlockBox(lines: string[]): string[] {
+  let open = false
+  return lines.map(line => {
+    const marker = /^```(\S*)/.exec(stripTerminalSequences(line).trim())
+    if (marker === null) return line
+    const index = line.indexOf('```')
+    if (index < 0) return line
+    const prefix = line.slice(0, index)
+    const suffix = line.slice(index + marker[0].length)
+    if (open) {
+      open = false
+      return `${prefix}${ansi.gray('└─')}${suffix}`
+    }
+    open = true
+    const label = marker[1]
+    return label === undefined || label === ''
+      ? `${prefix}${ansi.gray('┌─')}${suffix}`
+      : `${prefix}${ansi.gray('┌─ ')}${ansi.cyan(ansi.bold(label))}${suffix}`
+  })
+}
+
 /**
  * One verbose card row, mirroring the Web disclosure row. Rows with a detail
  * (skill catalog, injected context, tool output, compaction, retries, …) render
@@ -152,7 +193,9 @@ function rowComponent(row: TranscriptRow, rowExpanded: boolean): Component {
       : row.kind === 'error' ? ansi.red : ansi.yellow
   const marker = row.kind === 'user' ? OSC133_PROMPT_START : ''
   const header = new Text(`${marker}\n${style(ansi.bold(`${label}${row.messageId === undefined ? '' : ` · ${shorten(row.messageId, 14)}`}`))}`, 1, 0)
-  const content = row.kind === 'assistant' || row.kind === 'reasoning'
+  // User, assistant, and reasoning rows render Markdown so fenced code blocks
+  // and inline formatting surface as real blocks instead of raw source text.
+  const content = row.kind === 'assistant' || row.kind === 'reasoning' || row.kind === 'user'
     ? new Markdown(
       row.text,
       1,
@@ -164,6 +207,9 @@ function rowComponent(row: TranscriptRow, rowExpanded: boolean): Component {
     : new Text(row.text, 1, 0)
   return new VStack([header, content])
 }
+
+/** Row kinds whose content is Markdown-rendered and boxed for code blocks. */
+const MARKDOWN_ROW_KINDS = new Set<TranscriptRow['kind']>(['assistant', 'reasoning', 'user'])
 
 class TranscriptDocument implements Component {
   private state: TuiViewState
@@ -199,7 +245,8 @@ class TranscriptDocument implements Component {
         cached = { signature, component: rowComponent(row, rowExpanded) }
         this.cache.set(row.id, cached)
       }
-      rendered.push(...cached.component.render(width))
+      const lines = cached.component.render(width)
+      rendered.push(...(MARKDOWN_ROW_KINDS.has(row.kind) ? codeBlockBox(lines) : lines))
     }
     for (const key of this.cache.keys()) if (!retained.has(key)) this.cache.delete(key)
     rendered.push(...this.renderStreamTail(width))
@@ -219,7 +266,18 @@ class TranscriptDocument implements Component {
         lines.push(ansi.gray(` ${line}${marker}`))
       })
     }
-    if (partialText !== '') lines.push(ansi.cyan(` ${oneLine(partialText)}▍`))
+    if (partialText !== '') {
+      // Streamed reply text renders through the same Markdown pipeline as the
+      // committed row, so a code block takes shape (boxed) as it streams
+      // instead of showing the raw fence source. Only the freshest lines stay
+      // visible, mirroring the reasoning tail.
+      const tail = markdownTail(partialText, Math.max(1, width - 2), THINKING_TAIL_LINES)
+      if (tail.length > 0) {
+        const last = tail[tail.length - 1] as string
+        tail[tail.length - 1] = `${last}▍`
+        lines.push(...tail)
+      }
+    }
     if (partialTool !== undefined) {
       lines.push(ansi.yellow(` ◆ ${partialTool.name || '工具'} ${oneLine(partialTool.arguments)}`))
     }
@@ -995,6 +1053,17 @@ export class TerminalView {
       return
     }
     this.clearPicker()
+    if (this.state.subagentDepth > 0) {
+      // Persistent hint while navigating a subagent transcript: the composer
+      // targets the child, so remind the user how to get back to the parent.
+      const depth = this.state.subagentDepth
+      const marker = depth > 1 ? `第 ${String(depth)} 层子代理` : '子代理 transcript'
+      this.composer.set([
+        new Text(`${ansi.cyan(ansi.bold(`◀ ${marker}`))} ${ansi.dim('· 输入 /back 返回父会话')}`, 1, 0),
+        this.editorBox,
+      ], this.editorBox)
+      return
+    }
     this.composer.set([this.editorBox], this.editorBox)
   }
 }
@@ -1148,6 +1217,7 @@ function renderStatus(state: TuiViewState, width: number): string[] {
   return balanceSegments([
     phaseLabel,
     state.agentPreset === undefined ? undefined : ansi.bold(state.agentPreset),
+    state.subagentDepth > 0 ? ansi.magenta(`子代理${state.subagentDepth > 1 ? ` ${String(state.subagentDepth)}` : ''} · /back 返回`) : undefined,
     state.model === undefined ? undefined : ansi.dim(shorten(state.model, 36)),
     state.reasoningEffort,
     state.cwd === undefined ? undefined : ansi.dim(shorten(state.cwd, Math.max(18, Math.floor(width / 3)))),
