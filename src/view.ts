@@ -288,7 +288,7 @@ class TranscriptDocument implements Component {
     if (partialReasoning === '' && partialText === '' && partialTool === undefined) return []
     const lines: string[] = ['']
     if (partialReasoning !== '') {
-      lines.push(ansi.gray(ansi.bold(` ${THINKING_LABEL}`)))
+      lines.push(ansi.gray(ansi.italic(` ${THINKING_LABEL}`)))
       const tail = reasoningTail(partialReasoning, Math.max(1, width - 3), THINKING_TAIL_LINES)
       tail.forEach((line, index) => {
         const marker = index === tail.length - 1 ? ' ▍' : ''
