@@ -37,6 +37,7 @@ export const palette = {
   border: fg256(69), // #5f87ff
   borderMuted: fg256(239), // #505050
   userBg: bg256(59), // #343541
+  customBg: bg256(17), // #2d2838, pi custom/compaction messages
   muted: fg256(244), // #808080
   text: fg256(188), // #d4d4d4
   secretLabel: fg256(104), // #9575cd

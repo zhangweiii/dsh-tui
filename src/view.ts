@@ -14,6 +14,8 @@ import { formatCompact, oneLine, shorten } from './format.ts'
 import { ansi, editorTheme, markdownTheme, palette, selectListTheme } from './theme.ts'
 
 const OSC133_PROMPT_START = '\u001B]133;A\u0007'
+const OSC133_ZONE_END = '\u001B]133;B\u0007'
+const OSC133_ZONE_FINAL = '\u001B]133;C\u0007'
 
 /** Change-detection signature for a list of picker/menu items. */
 function itemsSignature(items: readonly { value: string; label?: string | undefined; description?: string | undefined }[]): string {
@@ -130,7 +132,10 @@ function markdownTail(text: string, width: number, maximum: number): string[] {
  * @param expanded - Whether this row's detail is currently unfolded.
  */
 function cardRow(row: TranscriptRow, label: string, expanded: boolean): Component {
-  const style = row.kind === 'context' ? ansi.dim : statusStyle(row)
+  // Compaction summaries use pi's lavender `[compaction]`-style label color.
+  const style = row.kind === 'compaction'
+    ? palette.secretLabel
+    : row.kind === 'context' ? ansi.dim : statusStyle(row)
   const icon = row.kind === 'context' ? '' : `${statusIcon(row)} `
   const marker = expanded ? EXPANDED_MARKER : COLLAPSED_MARKER
   const children: Component[] = [
@@ -218,7 +223,7 @@ function rowComponent(row: TranscriptRow, rowExpanded: boolean): Component {
       row.kind === 'reasoning' ? { color: ansi.gray, italic: true } : undefined,
       { preserveOrderedListMarkers: true },
     )
-    : new Text(row.text, 1, 0)
+    : row.kind === 'error' ? new Text(ansi.red(row.text), 1, 0) : new Text(row.text, 1, 0)
   return new VStack([header, content])
 }
 
@@ -258,8 +263,19 @@ class TranscriptDocument implements Component {
       }
       const lines = cached.component.render(width)
       // User messages render as a bubble with the pi user-message background
-      // (full row width, including blank lines, like pi's Box).
-      rendered.push(...(row.kind === 'user' ? lines.map(line => palette.userBg(line)) : lines))
+      // (full row width, including blank lines, like pi's Box) and the full
+      // OSC133 prompt zone on the first/last line, like pi's message frames.
+      if (row.kind === 'user') {
+        let framed = lines.map(line => palette.userBg(line))
+        const last = framed.length - 1
+        if (last >= 0) framed[last] = `${OSC133_ZONE_END}${OSC133_ZONE_FINAL}${framed[last]}`
+        rendered.push(...framed)
+      } else if (row.kind === 'compaction') {
+        // Compaction summaries sit on pi's custom-message background.
+        rendered.push(...lines.map(line => palette.customBg(line)))
+      } else {
+        rendered.push(...lines)
+      }
     }
     for (const key of this.cache.keys()) if (!retained.has(key)) this.cache.delete(key)
     rendered.push(...this.renderStreamTail(width))
