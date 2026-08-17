@@ -140,8 +140,47 @@ function cardRow(row: TranscriptRow, label: string, expanded: boolean): Componen
   return new VStack(children)
 }
 
+/** Full-width horizontal rule that adapts to the render width. */
+function horizontalRule(color: (text: string) => string): Component {
+  return {
+    render: (width: number) => [color('─'.repeat(Math.max(1, width)))],
+    invalidate: () => {},
+  }
+}
+
+/**
+ * Tool card mirroring the pi bash-execution component: bordered top/bottom,
+ * bold status-colored title, and the folded one-line header when collapsed.
+ * The border and title follow the row status like pi's status-colored frames.
+ * @param row - The tool row to render.
+ * @param expanded - Whether this row's output is currently unfolded.
+ */
+function toolCard(row: TranscriptRow, expanded: boolean): Component {
+  const style = statusStyle(row)
+  const marker = expanded ? EXPANDED_MARKER : COLLAPSED_MARKER
+  const header = new Text(`\n${marker} ${style(ansi.bold(`${statusIcon(row)} 工具 · ${row.text}`))}`, 1, 0)
+  // Folded rows keep the compact one-line header; running and expanded rows
+  // render the pi-style bordered card with the output.
+  if (row.status !== 'running' && !expanded) return header
+  const children: Component[] = [
+    horizontalRule(style),
+    header,
+    ...(row.detail === undefined ? [] : [new Text(ansi.dim(limitedLines(row.detail, 12)), 1, 0)]),
+    ...(row.status === 'failed'
+      ? [new Text(ansi.red('(exit 非 0)'), 2, 0)]
+      : row.status === 'cancelled'
+        ? [new Text(ansi.yellow('(已取消)'), 2, 0)]
+        : []),
+    horizontalRule(style),
+  ]
+  return new VStack(children)
+}
+
 function rowComponent(row: TranscriptRow, rowExpanded: boolean): Component {
   const cardLabel = CARD_LABELS[row.kind]
+  if (row.kind === 'tool') {
+    return toolCard(row, rowExpanded)
+  }
   if (cardLabel !== undefined && row.kind !== 'deliverable') {
     return cardRow(row, cardLabel, rowExpanded)
   }
