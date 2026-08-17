@@ -266,7 +266,11 @@ class TranscriptDocument implements Component {
       // (full row width, including blank lines, like pi's Box) and the full
       // OSC133 prompt zone on the first/last line, like pi's message frames.
       if (row.kind === 'user') {
-        let framed = lines.map(line => palette.userBg(line))
+        // The leading blank separator line (message spacing) stays transparent;
+        // only the bubble content gets the pi user-message background.
+        let framed = lines.map((line, index) => (
+          index === 0 && stripTerminalSequences(line).trim() === '' ? line : palette.userBg(line)
+        ))
         const last = framed.length - 1
         if (last >= 0) framed[last] = `${OSC133_ZONE_END}${OSC133_ZONE_FINAL}${framed[last]}`
         rendered.push(...framed)

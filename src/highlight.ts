@@ -21,6 +21,16 @@ export function bg256(index: number): (text: string) => string {
   return sgr(`48;5;${String(index)}`, '49')
 }
 
+/** True-color foreground used when the terminal reports 24-bit support. */
+export function fgTrue(r: number, g: number, b: number): (text: string) => string {
+  return sgr(`38;2;${String(r)};${String(g)};${String(b)}`, '39')
+}
+
+/** True-color background used when the terminal reports 24-bit support. */
+export function bgTrue(r: number, g: number, b: number): (text: string) => string {
+  return sgr(`48;2;${String(r)};${String(g)};${String(b)}`, '49')
+}
+
 const dim = sgr('2', '22')
 const bold = sgr('1', '22')
 const italic = sgr('3', '23')

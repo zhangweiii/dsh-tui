@@ -3,7 +3,8 @@
 import type {
   EditorTheme, MarkdownTheme, SelectListTheme,
 } from '@earendil-works/pi-tui'
-import { bg256, fg256, highlightCode } from './highlight.ts'
+import { getCapabilities } from '@earendil-works/pi-tui'
+import { bg256, bgTrue, fg256, highlightCode } from './highlight.ts'
 
 function sgr(open: number, close: number): (text: string) => string {
   return text => `\u001B[${String(open)}m${text}\u001B[${String(close)}m`
@@ -30,14 +31,18 @@ export const ansi = {
  * look: teal accent, soft-yellow headings, blue-gray links, dark gray-blue
  * user-message bubbles, and subdued borders instead of bright cyan.
  */
+const TRUE_COLOR = getCapabilities().trueColor
+
 export const palette = {
   accent: fg256(109), // #8abeb7
   heading: fg256(222), // #f0c674
   link: fg256(109), // #81a2be (same 256 slot as the accent teal)
   border: fg256(69), // #5f87ff
   borderMuted: fg256(239), // #505050
-  userBg: bg256(59), // #343541
-  customBg: bg256(17), // #2d2838, pi custom/compaction messages
+  // User bubble: a light slate in true color, falling back to a lighter
+  // neutral 256 gray (pi's muted #808080) on older terminals.
+  userBg: TRUE_COLOR ? bgTrue(106, 114, 132) : bg256(244), // #6a7284
+  customBg: TRUE_COLOR ? bgTrue(45, 40, 56) : bg256(17), // #2d2838
   muted: fg256(244), // #808080
   text: fg256(188), // #d4d4d4
   secretLabel: fg256(104), // #9575cd
