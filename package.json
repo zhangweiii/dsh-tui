@@ -72,7 +72,8 @@
   "dependencies": {
     "@deepseek-ai/schemastery": "^3.18.1",
     "@earendil-works/pi-tui": "0.84.2",
-    "commander": "^15.0.0"
+    "commander": "^15.0.0",
+    "highlight.js": "^11.12.0"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
@@ -127,8 +128,8 @@
     "@deepseek-ai/dsh-user-questions": "^0.1.0-rc.6",
     "@deepseek-ai/dsh-workflow": "^0.1.0-rc.6",
     "@deepseek-ai/dsh-workspace": "^0.1.0-rc.6",
-    "@xterm/headless": "5.5.0",
     "@types/node": "^24.0.0",
+    "@xterm/headless": "5.5.0",
     "tsdown": "^0.22.2",
     "typescript": "^6.0.3",
     "vitest": "^4.1.8"

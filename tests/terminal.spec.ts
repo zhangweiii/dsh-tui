@@ -894,7 +894,7 @@ describe('pi-tui terminal application', () => {
     expect(terminal.writes.join('')).toContain('\u001B[?1049l')
   })
 
-  it('boxes fenced code blocks in assistant rows instead of showing raw fences', async () => {
+  it('keeps code-block fences and highlights their syntax in assistant rows', async () => {
     const terminal = new TestTerminal(100, 26)
     const controller = new TestController({
       rows: [{
@@ -906,16 +906,18 @@ describe('pi-tui terminal application', () => {
     await settle(terminal)
 
     const viewport = terminal.viewport()
-    expect(viewport).toContain('┌─ ts')
-    expect(viewport).toContain('└─')
+    expect(viewport).toContain('```ts')
     expect(viewport).toContain('const x = 1')
     expect(viewport).toContain('console.log(x)')
-    expect(viewport).not.toContain('```ts')
-    expect(viewport).not.toContain('```\n')
+    // Opening and closing fences both stay visible.
+    expect((viewport.match(/```/g) ?? []).length).toBeGreaterThanOrEqual(2)
+    // The box-drawing experiment is gone; code keeps the fence + per-token colors.
+    expect(viewport).not.toContain('┌─')
+    expect(viewport).not.toContain('└─')
     application.stop()
   })
 
-  it('boxes user-sent code blocks and streamed fences instead of raw text', async () => {
+  it('renders user-sent and streamed code fences with syntax highlighting', async () => {
     const terminal = new TestTerminal(100, 26)
     const controller = new TestController({
       rows: [{ id: 'user-1', seq: 0, kind: 'user', text: '请运行：\n\n```bash\nls -la\n```' }] as never,
@@ -926,19 +928,17 @@ describe('pi-tui terminal application', () => {
     await settle(terminal)
 
     let viewport = terminal.viewport()
-    expect(viewport).toContain('┌─ bash')
+    expect(viewport).toContain('```bash')
     expect(viewport).toContain('ls -la')
-    expect(viewport).not.toContain('```bash')
 
-    // The streamed tail keeps only the freshest lines: closing box and code
-    // stay visible while the raw opening fence never appears on screen.
+    // The streamed tail keeps only the freshest lines: code and closing fence
+    // stay visible while the block builds.
     controller.publish({ partialText: '```ts\nconst a = 1\nconsole.log(a)\n```' })
     await settle(terminal)
     viewport = terminal.viewport()
     expect(viewport).toContain('const a = 1')
     expect(viewport).toContain('console.log(a)')
-    expect(viewport).toContain('└─')
-    expect(viewport).not.toContain('```')
+    expect(viewport).toContain('```')
     expect(viewport).not.toContain('partialText')
     application.stop()
   })

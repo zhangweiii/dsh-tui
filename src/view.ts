@@ -104,45 +104,20 @@ const CARD_LABELS: Partial<Record<TranscriptRow['kind'], string>> = {
 const COLLAPSED_MARKER = '▸'
 const EXPANDED_MARKER = '▾'
 
-/** Clip a Markdown block after a fixed number of lines within the given width. */
+/**
+ * Clip a Markdown block after a fixed number of lines within the given width.
+ * Code fences keep their ``` borders and highlight through `markdownTheme`.
+ */
 function markdownTail(text: string, width: number, maximum: number): string[] {
   // Budget the source first so a long stream does not re-parse the whole reply
   // on every chunk; the freshest lines stay visible, like the reasoning tail.
   const budget = Math.max(1, width * maximum)
   const suffix = text.length <= budget ? text : `…${text.slice(-Math.max(1, budget - 1))}`
-  const rendered = new Markdown(suffix, 1, 0, markdownTheme, undefined, { preserveOrderedListMarkers: true })
+  return new Markdown(suffix, 1, 0, markdownTheme, undefined, { preserveOrderedListMarkers: true })
     .render(width)
     .map(line => line.trimEnd())
-  return codeBlockBox(rendered).filter(line => line.trim() !== '').slice(-maximum)
-}
-
-/**
- * Replace literal ``` fence markers with box-drawing code-block borders, so a
- * fenced block renders as an actual code block instead of raw markdown text.
- * Detection is order-aware so language-less blocks (whose opening ``` looks
- * identical to a closing one) still open and close correctly.
- * @param lines - Rendered terminal lines, e.g. from a pi-tui `Markdown`.
- * @returns The same lines with code-block borders boxed up.
- */
-function codeBlockBox(lines: string[]): string[] {
-  let open = false
-  return lines.map(line => {
-    const marker = /^```(\S*)/.exec(stripTerminalSequences(line).trim())
-    if (marker === null) return line
-    const index = line.indexOf('```')
-    if (index < 0) return line
-    const prefix = line.slice(0, index)
-    const suffix = line.slice(index + marker[0].length)
-    if (open) {
-      open = false
-      return `${prefix}${ansi.gray('└─')}${suffix}`
-    }
-    open = true
-    const label = marker[1]
-    return label === undefined || label === ''
-      ? `${prefix}${ansi.gray('┌─')}${suffix}`
-      : `${prefix}${ansi.gray('┌─ ')}${ansi.cyan(ansi.bold(label))}${suffix}`
-  })
+    .filter(line => line.trim() !== '')
+    .slice(-maximum)
 }
 
 /**
@@ -208,9 +183,6 @@ function rowComponent(row: TranscriptRow, rowExpanded: boolean): Component {
   return new VStack([header, content])
 }
 
-/** Row kinds whose content is Markdown-rendered and boxed for code blocks. */
-const MARKDOWN_ROW_KINDS = new Set<TranscriptRow['kind']>(['assistant', 'reasoning', 'user'])
-
 class TranscriptDocument implements Component {
   private state: TuiViewState
   private readonly cache = new Map<string, { signature: string; component: Component }>()
@@ -246,7 +218,7 @@ class TranscriptDocument implements Component {
         this.cache.set(row.id, cached)
       }
       const lines = cached.component.render(width)
-      rendered.push(...(MARKDOWN_ROW_KINDS.has(row.kind) ? codeBlockBox(lines) : lines))
+      rendered.push(...lines)
     }
     for (const key of this.cache.keys()) if (!retained.has(key)) this.cache.delete(key)
     rendered.push(...this.renderStreamTail(width))

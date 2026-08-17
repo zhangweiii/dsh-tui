@@ -3,6 +3,7 @@
 import type {
   EditorTheme, MarkdownTheme, SelectListTheme,
 } from '@earendil-works/pi-tui'
+import { fg256, highlightCode } from './highlight.ts'
 
 function sgr(open: number, close: number): (text: string) => string {
   return text => `\u001B[${String(open)}m${text}\u001B[${String(close)}m`
@@ -36,13 +37,18 @@ export const editorTheme: EditorTheme = {
   selectList: selectListTheme,
 }
 
+/**
+ * Markdown theme following the pi coding agent's dark theme (VS Code Dark+):
+ * inline code in the accent teal, code-block text in the code green, gray
+ * fences, and per-token syntax highlighting for known languages.
+ */
 export const markdownTheme: MarkdownTheme = {
   heading: text => ansi.cyan(ansi.bold(text)),
   link: text => ansi.cyan(ansi.underline(text)),
   linkUrl: ansi.dim,
-  code: ansi.yellow,
-  codeBlock: ansi.green,
-  codeBlockBorder: ansi.gray,
+  code: fg256(109), // mdCode accent #8abeb7
+  codeBlock: fg256(143), // mdCodeBlock #b5bd68
+  codeBlockBorder: fg256(244), // mdCodeBlockBorder gray #808080
   quote: ansi.dim,
   quoteBorder: ansi.gray,
   hr: ansi.gray,
@@ -51,4 +57,5 @@ export const markdownTheme: MarkdownTheme = {
   italic: ansi.italic,
   strikethrough: ansi.strikethrough,
   underline: ansi.underline,
+  highlightCode,
 }
