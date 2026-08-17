@@ -427,6 +427,7 @@ export class TuiController {
       overlay: current.overlay,
       picker: current.picker,
       notice: current.notice,
+      subagentDepth: current.subagentDepth,
       ...overrides,
     }, this.historyEntries)
   }
@@ -515,6 +516,7 @@ export class TuiController {
       cwd: summary.cwd,
       running: summary.running,
       projections: baseline,
+      subagentDepth: 0,
       sessions,
     })
     const [historyResponse, modelsResponse] = await Promise.all([
@@ -568,6 +570,7 @@ export class TuiController {
       ...createInitialState(),
       sessionId: address.childSessionId,
       cwd,
+      subagentDepth: this.targetStack.length,
       sessions,
     })
     this.replaceHistory([...history.events])
@@ -579,7 +582,9 @@ export class TuiController {
       phase: 'ready',
       projections,
       title: projectedTitle(projections),
-      notice: address.mode === 'one-shot' ? '只读 one-shot subagent' : undefined,
+      notice: address.mode === 'one-shot'
+        ? '只读 one-shot subagent · 输入 /back 返回父会话'
+        : '已进入 subagent transcript · 输入 /back 返回父会话',
     })
     this.drainBufferedMux()
   }
@@ -1868,6 +1873,7 @@ export class TuiController {
     const status = projectionStatus(this.state.projections)
     const lines = [
       `状态：${this.state.running ? '执行中' : '就绪'}`,
+      `导航：${this.state.subagentDepth === 0 ? '主会话' : `子代理 transcript（第 ${String(this.state.subagentDepth)} 层）· 输入 /back 返回父会话`}`,
       `会话：${this.state.sessionId ?? '—'}`,
       `标题：${this.state.title ?? '—'}`,
       `Preset：${this.state.agentPreset ?? '—'}`,
