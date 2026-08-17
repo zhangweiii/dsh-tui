@@ -16,6 +16,11 @@ export function fg256(index: number): (text: string) => string {
   return sgr(`38;5;${String(index)}`, '39')
 }
 
+/** 256-color background, e.g. `bg256(59)` for the pi user-message bubble. */
+export function bg256(index: number): (text: string) => string {
+  return sgr(`48;5;${String(index)}`, '49')
+}
+
 const dim = sgr('2', '22')
 const bold = sgr('1', '22')
 const italic = sgr('3', '23')

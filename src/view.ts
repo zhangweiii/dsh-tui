@@ -11,7 +11,7 @@ import {
 } from './model.ts'
 import { providerSetupRows, providerSetupValidation, type ProviderSetupField } from './provider-setup.ts'
 import { formatCompact, oneLine, shorten } from './format.ts'
-import { ansi, editorTheme, markdownTheme, selectListTheme } from './theme.ts'
+import { ansi, editorTheme, markdownTheme, palette, selectListTheme } from './theme.ts'
 
 const OSC133_PROMPT_START = '\u001B]133;A\u0007'
 
@@ -87,7 +87,7 @@ function statusIcon(row: TranscriptRow): string {
 function statusStyle(row: TranscriptRow): (text: string) => string {
   if (row.status === 'failed') return ansi.red
   if (row.status === 'completed') return ansi.green
-  if (row.status === 'running') return ansi.cyan
+  if (row.status === 'running') return palette.accent
   return ansi.gray
 }
 
@@ -162,9 +162,9 @@ function rowComponent(row: TranscriptRow, rowExpanded: boolean): Component {
         ? '思考'
         : row.kind === 'error' ? '错误' : '提示'
   const style = row.kind === 'user'
-    ? ansi.magenta
+    ? ansi.bold
     : row.kind === 'assistant'
-      ? ansi.cyan
+      ? palette.accent
       : row.kind === 'error' ? ansi.red : ansi.yellow
   const marker = row.kind === 'user' ? OSC133_PROMPT_START : ''
   const header = new Text(`${marker}\n${style(ansi.bold(`${label}${row.messageId === undefined ? '' : ` · ${shorten(row.messageId, 14)}`}`))}`, 1, 0)
@@ -176,7 +176,7 @@ function rowComponent(row: TranscriptRow, rowExpanded: boolean): Component {
       1,
       0,
       markdownTheme,
-      row.kind === 'reasoning' ? { color: ansi.gray } : undefined,
+      row.kind === 'reasoning' ? { color: ansi.gray, italic: true } : undefined,
       { preserveOrderedListMarkers: true },
     )
     : new Text(row.text, 1, 0)
@@ -218,7 +218,9 @@ class TranscriptDocument implements Component {
         this.cache.set(row.id, cached)
       }
       const lines = cached.component.render(width)
-      rendered.push(...lines)
+      // User messages render as a bubble with the pi user-message background
+      // (full row width, including blank lines, like pi's Box).
+      rendered.push(...(row.kind === 'user' ? lines.map(line => palette.userBg(line)) : lines))
     }
     for (const key of this.cache.keys()) if (!retained.has(key)) this.cache.delete(key)
     rendered.push(...this.renderStreamTail(width))
@@ -284,7 +286,7 @@ class StateLine implements Component {
   }
 }
 
-const PROMPT_MARKER = `${ansi.cyan(ansi.bold('>'))} `
+const PROMPT_MARKER = `${palette.accent(ansi.bold('>'))} `
 const PROMPT_INDENT = ' '.repeat(visibleWidth('> '))
 
 /**
@@ -647,8 +649,8 @@ class ProviderSearchPicker implements Component, Focusable {
         ? [ansi.dim('  没有匹配的 Provider')]
         : visible.map((item, offset) => {
             const selected = start + offset === this.selectedIndex
-            const prefix = selected ? ansi.cyan('→ ') : '  '
-            const label = selected ? ansi.cyan(item.label) : item.label
+            const prefix = selected ? palette.accent('→ ') : '  '
+            const label = selected ? palette.accent(item.label) : item.label
             const detail = item.description === undefined ? '' : ansi.dim(`  ${item.description}`)
             return truncateToWidth(`${prefix}${label}${detail}`, width)
           })),
@@ -1031,7 +1033,7 @@ export class TerminalView {
       const depth = this.state.subagentDepth
       const marker = depth > 1 ? `第 ${String(depth)} 层子代理` : '子代理 transcript'
       this.composer.set([
-        new Text(`${ansi.cyan(ansi.bold(`◀ ${marker}`))} ${ansi.dim('· 输入 /back 返回父会话')}`, 1, 0),
+        new Text(`${palette.accent(ansi.bold(`◀ ${marker}`))} ${ansi.dim('· 输入 /back 返回父会话')}`, 1, 0),
         this.editorBox,
       ], this.editorBox)
       return
@@ -1052,7 +1054,7 @@ function questionComponents(question: AskUserQuestionItem, index: number, total:
   // the user types numbers. Rendering both would duplicate every option.
   if (includeOptions) {
     for (const [optionIndex, option] of (question.options ?? []).entries()) {
-      components.push(new Text(`${ansi.cyan(`${String(optionIndex + 1)}.`)} ${option.label}${option.description === undefined ? '' : ` — ${option.description}`}`, 1, 0))
+      components.push(new Text(`${palette.accent(`${String(optionIndex + 1)}.`)} ${option.label}${option.description === undefined ? '' : ` — ${option.description}`}`, 1, 0))
     }
   }
   return components
@@ -1080,7 +1082,7 @@ function isLiveJob(job: { status: string }): boolean {
 
 function jobColor(job: { status: string }): (text: string) => string {
   if (job.status === 'failed') return ansi.red
-  if (job.status === 'running') return ansi.cyan
+  if (job.status === 'running') return palette.accent
   return ansi.dim
 }
 
@@ -1118,7 +1120,7 @@ function renderActivity(state: TuiViewState, expanded: boolean): string[] {
       lines.push(`${ansi.bold(`待办 已办 ${String(completed)}/${String(total)}`)}`)
       for (const todo of state.todos) {
         if (todo.status === 'in_progress') {
-          lines.push(` ${ansi.cyan(ansi.bold('◆'))} ${ansi.bold(oneLine(todo.content))}`)
+          lines.push(` ${palette.accent(ansi.bold('◆'))} ${ansi.bold(oneLine(todo.content))}`)
         } else if (todo.status === 'completed') {
           lines.push(` ${ansi.green('✓')} ${ansi.dim(oneLine(todo.content))}`)
         } else {
@@ -1140,7 +1142,7 @@ function renderActivity(state: TuiViewState, expanded: boolean): string[] {
     }
     if (goal !== undefined) {
       if (lines.length > 0) lines.push('')
-      lines.push(`${ansi.bold(`目标 · ${goal.phase}`)} · ${ansi.cyan(oneLine(goal.objective))}`)
+      lines.push(`${ansi.bold(`目标 · ${goal.phase}`)} · ${palette.accent(oneLine(goal.objective))}`)
     }
     if (queueSummary !== '' && state.queueSize > 0) lines.push(ansi.dim(`队列 ${String(state.queueSize)} · ${queueSummary}`))
     // Keep the whole block separated from both the transcript and the editor.
@@ -1153,7 +1155,7 @@ function renderActivity(state: TuiViewState, expanded: boolean): string[] {
     // job/workflow summary into the same row, followed by goal and queue.
     const todoSummary = inProgress === undefined
       ? remaining.slice(0, 3).map(todo => `· ${oneLine(todo.content)}`).join(' · ')
-      : `${ansi.cyan(ansi.bold('◆'))} ${ansi.bold(oneLine(inProgress.content))}`
+      : `${palette.accent(ansi.bold('◆'))} ${ansi.bold(oneLine(inProgress.content))}`
     const segments = [
       remaining.length > 0 ? `${ansi.bold(`待办 已办 ${String(completed)}/${String(total)}`)}${todoSummary === '' ? '' : ` · ${todoSummary}`}` : undefined,
       liveJobs.length > 0 ? `${ansi.bold(`任务 ${String(liveJobs.length)}`)} · ${liveJobs.slice(0, 2).map(jobRenderer).join(' · ')}` : undefined,
@@ -1162,7 +1164,7 @@ function renderActivity(state: TuiViewState, expanded: boolean): string[] {
     // Pull the todo, job, and workflow summaries into one strip, padded above
     // so it is not glued to the transcript.
     if (segments !== '') lines.push('', segments)
-    if (goal !== undefined) lines.push(`${ansi.bold(`目标 · ${goal.phase}`)} · ${ansi.cyan(oneLine(goal.objective))}`)
+    if (goal !== undefined) lines.push(`${ansi.bold(`目标 · ${goal.phase}`)} · ${palette.accent(oneLine(goal.objective))}`)
     if (queueSummary !== '' && state.queueSize > 0) lines.push(ansi.dim(`队列 ${String(state.queueSize)} · ${queueSummary}`))
   }
   return lines
@@ -1184,7 +1186,7 @@ function renderStatus(state: TuiViewState, width: number): string[] {
     ? undefined
     : status.plan.pending
       ? ansi.yellow(`计划${status.plan.active ? '关闭' : '开启'} · 切换中`)
-      : status.plan.active ? ansi.cyan('计划') : undefined
+      : status.plan.active ? palette.accent('计划') : undefined
   const contextWindow = state.modelContextWindow ?? status.contextWindow
   return balanceSegments([
     phaseLabel,
@@ -1199,7 +1201,7 @@ function renderStatus(state: TuiViewState, width: number): string[] {
     contextWindow === undefined ? undefined : formatCompact(contextWindow),
     state.queueSize > 0 ? `队列 ${String(state.queueSize)}` : undefined,
     liveJobCount > 0 ? `任务 ${String(liveJobCount)}` : undefined,
-    status.permission === undefined ? undefined : ansi.cyan(shorten(status.permission, 18)),
+    status.permission === undefined ? undefined : palette.accent(shorten(status.permission, 18)),
     plan,
   ].filter(value => value !== undefined), width)
 }

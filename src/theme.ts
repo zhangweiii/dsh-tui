@@ -3,7 +3,7 @@
 import type {
   EditorTheme, MarkdownTheme, SelectListTheme,
 } from '@earendil-works/pi-tui'
-import { fg256, highlightCode } from './highlight.ts'
+import { bg256, fg256, highlightCode } from './highlight.ts'
 
 function sgr(open: number, close: number): (text: string) => string {
   return text => `\u001B[${String(open)}m${text}\u001B[${String(close)}m`
@@ -24,35 +24,53 @@ export const ansi = {
   strikethrough: sgr(9, 29),
 } as const
 
+/**
+ * pi coding agent dark theme (VS Code Dark+) palette as nearest 256-color
+ * indices. Reuses these tokens across the UI so the terminal matches pi's
+ * look: teal accent, soft-yellow headings, blue-gray links, dark gray-blue
+ * user-message bubbles, and subdued borders instead of bright cyan.
+ */
+export const palette = {
+  accent: fg256(109), // #8abeb7
+  heading: fg256(222), // #f0c674
+  link: fg256(109), // #81a2be (same 256 slot as the accent teal)
+  border: fg256(69), // #5f87ff
+  borderMuted: fg256(239), // #505050
+  userBg: bg256(59), // #343541
+  muted: fg256(244), // #808080
+  text: fg256(188), // #d4d4d4
+  secretLabel: fg256(104), // #9575cd
+}
+
 export const selectListTheme: SelectListTheme = {
-  selectedPrefix: ansi.cyan,
-  selectedText: text => ansi.cyan(ansi.bold(text)),
+  selectedPrefix: palette.accent,
+  selectedText: text => palette.accent(text),
   description: ansi.dim,
   scrollInfo: ansi.dim,
   noMatch: ansi.yellow,
 }
 
 export const editorTheme: EditorTheme = {
-  borderColor: ansi.cyan,
+  borderColor: palette.borderMuted,
   selectList: selectListTheme,
 }
 
 /**
  * Markdown theme following the pi coding agent's dark theme (VS Code Dark+):
- * inline code in the accent teal, code-block text in the code green, gray
+ * soft-yellow headings, teal links and bullets, accent inline code, gray
  * fences, and per-token syntax highlighting for known languages.
  */
 export const markdownTheme: MarkdownTheme = {
-  heading: text => ansi.cyan(ansi.bold(text)),
-  link: text => ansi.cyan(ansi.underline(text)),
-  linkUrl: ansi.dim,
-  code: fg256(109), // mdCode accent #8abeb7
+  heading: text => palette.heading(ansi.bold(text)),
+  link: text => palette.link(ansi.underline(text)),
+  linkUrl: palette.muted,
+  code: palette.accent, // mdCode accent #8abeb7
   codeBlock: fg256(143), // mdCodeBlock #b5bd68
   codeBlockBorder: fg256(244), // mdCodeBlockBorder gray #808080
   quote: ansi.dim,
   quoteBorder: ansi.gray,
-  hr: ansi.gray,
-  listBullet: ansi.cyan,
+  hr: palette.muted,
+  listBullet: palette.accent,
   bold: ansi.bold,
   italic: ansi.italic,
   strikethrough: ansi.strikethrough,
