@@ -24,6 +24,7 @@ export const TUI_COMMANDS: readonly CommandDescriptor[] = [
   { command: '/new', description: '新建并切换会话', input: '[cwd]' },
   { command: '/resume', description: '选择、恢复并切换会话', input: '[session-id-or-prefix]' },
   { command: '/rename', description: '重命名当前会话', input: '<title>' },
+  { command: '/title', description: '设置终端窗口/标签页标题', input: '<title>' },
   { command: '/fork', description: '分叉当前会话', input: '[event-seq]' },
   { command: '/older', description: '加载更早记录' },
   { command: '/models', description: '选择模型' },

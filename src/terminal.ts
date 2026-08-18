@@ -11,10 +11,18 @@ import type { TuiController } from './controller.ts'
 import type { Config } from './index.ts'
 import type { PendingQuestion, TuiViewState } from './model.ts'
 import { TerminalView, type QuestionFlowSnapshot } from './view.ts'
+import {
+  DEFAULT_TERMINAL_TITLE, sanitizeTerminalText, terminalNotificationSequence,
+  type TerminalNotificationEnvironment,
+} from './terminal-controls.ts'
 
 export interface TerminalApplicationOptions {
   terminal?: Terminal
   onExit?: (code: number) => void
+  /** Explicit terminal title; when absent, the current session title is used. */
+  title?: string
+  /** Capability hints used to select the terminal notification protocol. */
+  notificationEnvironment?: TerminalNotificationEnvironment
 }
 
 /** Mutable state machine behind one pending structured-question batch. */
@@ -50,12 +58,33 @@ function optionAnswer(question: AskUserQuestionItem, value: string): AskUserQues
   return { id: question.id, selected: [], custom: normalized }
 }
 
+const TITLE_SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'] as const
+const TITLE_SPINNER_INTERVAL_MS = 80
+
+function turnCompletionMessage(kind: string): string {
+  switch (kind) {
+    case 'completed': return '执行完成'
+    case 'error': return '执行失败'
+    case 'aborted': return '执行已取消'
+    case 'max-tokens': return '执行结束：达到输出上限'
+    default: return `执行结束：${kind}`
+  }
+}
+
 /** One complete alternate-screen application for one controller. */
 export class TerminalApplication {
   readonly tui: TuiAltScreen
   readonly view: TerminalView
 
   private state: TuiViewState
+  private readonly terminal: Terminal
+  private terminalTitleOverride: string | undefined
+  private appliedTerminalTitle: string | undefined
+  private titleSpinnerTimer: ReturnType<typeof setInterval> | undefined
+  private titleSpinnerFrame = 0
+  private progressActive = false
+  private notificationsArmed: boolean
+  private lastNotifiedTurnEndSeq: number
   private started = false
   private stopped = false
   private unsubscribe: (() => void) | undefined
@@ -69,6 +98,10 @@ export class TerminalApplication {
     private readonly options: TerminalApplicationOptions = {},
   ) {
     this.state = controller.getSnapshot()
+    this.terminal = options.terminal ?? new ProcessTerminal()
+    this.terminalTitleOverride = options.title === undefined ? undefined : sanitizeTerminalText(options.title)
+    this.notificationsArmed = this.state.phase === 'ready'
+    this.lastNotifiedTurnEndSeq = this.state.lastTurnEnd?.seq ?? -1
     setKeybindings(new KeybindingsManager(TUI_KEYBINDINGS, {
       'tui.altScreen.top': 'ctrl+shift+home',
       'tui.altScreen.bottom': 'ctrl+shift+end',
@@ -81,7 +114,7 @@ export class TerminalApplication {
       'tui.select.up': ['up', 'ctrl+p'],
       'tui.select.down': ['down', 'ctrl+n'],
     }))
-    this.tui = new TuiAltScreen(options.terminal ?? new ProcessTerminal(), true, undefined, {
+    this.tui = new TuiAltScreen(this.terminal, true, undefined, {
       mouse: true,
       wheelScrollLines: 3,
     })
@@ -108,10 +141,27 @@ export class TerminalApplication {
   start(): void {
     if (this.started || this.stopped) return
     this.started = true
+    this.syncTerminal(this.state)
     this.unsubscribe = this.controller.subscribe(() => { this.update(this.controller.getSnapshot()) })
     this.removeInputListener = this.tui.addInputListener(data => this.handleGlobalInput(data))
     this.tui.start()
     void this.controller.start(this.config)
+  }
+
+  /** Set an explicit terminal window/tab title using the renderer's OSC 0 implementation. */
+  setTitle(title: string): void {
+    if (this.stopped) return
+    const normalized = sanitizeTerminalText(title)
+    if (normalized === '') return
+    this.terminalTitleOverride = normalized
+    this.syncTerminalTitle(this.state)
+  }
+
+  /** Emit the established OSC 777/99 notification form when supported. */
+  notify(message: string): void {
+    if (this.stopped) return
+    const sequence = terminalNotificationSequence(message, this.options.notificationEnvironment)
+    if (sequence !== undefined) this.terminal.write(sequence)
   }
 
   /** Reach terminal quiescence and restore the main screen once. */
@@ -122,12 +172,110 @@ export class TerminalApplication {
     this.removeInputListener = undefined
     this.unsubscribe?.()
     this.unsubscribe = undefined
+    this.stopTitleSpinner()
+    if (this.progressActive) {
+      this.terminal.setProgress(false)
+      this.progressActive = false
+    }
     this.controller.dispose()
     if (this.started) this.tui.stop({ preserveScreen: true })
   }
 
+  private applyTerminalTitle(title: string): void {
+    if (title === this.appliedTerminalTitle) return
+    this.terminal.setTitle(title)
+    this.appliedTerminalTitle = title
+  }
+
+  private baseTerminalTitle(next: TuiViewState): string {
+    const title = this.terminalTitleOverride
+      ?? (next.title === undefined ? DEFAULT_TERMINAL_TITLE : sanitizeTerminalText(next.title))
+    return title || DEFAULT_TERMINAL_TITLE
+  }
+
+  private syncTerminalTitle(next: TuiViewState): void {
+    const base = this.baseTerminalTitle(next)
+    const title = this.titleSpinnerTimer === undefined
+      ? base
+      : `${TITLE_SPINNER_FRAMES[this.titleSpinnerFrame]} ${base}`
+    this.applyTerminalTitle(title)
+  }
+
+  private startTitleSpinner(): void {
+    if (this.titleSpinnerTimer !== undefined) return
+    this.titleSpinnerFrame = 0
+    this.titleSpinnerTimer = setInterval(() => {
+      if (this.stopped || !this.state.running) {
+        this.stopTitleSpinner()
+        return
+      }
+      this.titleSpinnerFrame = (this.titleSpinnerFrame + 1) % TITLE_SPINNER_FRAMES.length
+      this.syncTerminalTitle(this.state)
+    }, TITLE_SPINNER_INTERVAL_MS)
+  }
+
+  private stopTitleSpinner(): void {
+    if (this.titleSpinnerTimer === undefined) return
+    clearInterval(this.titleSpinnerTimer)
+    this.titleSpinnerTimer = undefined
+    this.titleSpinnerFrame = 0
+    this.syncTerminalTitle(this.state)
+  }
+
+  private syncTerminal(next: TuiViewState): void {
+    if (next.running) this.startTitleSpinner()
+    else this.stopTitleSpinner()
+    this.syncTerminalTitle(next)
+    if (next.running !== this.progressActive) {
+      this.terminal.setProgress(next.running)
+      this.progressActive = next.running
+    }
+  }
+
+  private notificationForTransition(previous: TuiViewState, next: TuiViewState): string | undefined {
+    const sameSession = next.sessionId === previous.sessionId
+    if (!sameSession) this.lastNotifiedTurnEndSeq = -1
+
+    if (next.phase === 'error' && previous.phase !== 'error') {
+      return next.notice === undefined ? '终端会话启动失败' : `终端会话失败：${next.notice}`
+    }
+
+    // Every loading→ready transition is a session-load baseline: hydrate the
+    // notification cursor from the loaded projection so its historical
+    // turn/end records stay silent. A newly pending interaction is different:
+    // it still needs to wake a user who opened or switched into a session
+    // while an approval/question was waiting.
+    const readyBaseline = previous.phase !== 'ready' && next.phase === 'ready'
+    if (readyBaseline) {
+      this.lastNotifiedTurnEndSeq = next.lastTurnEnd?.seq ?? -1
+      this.notificationsArmed = true
+    }
+    const turnEnd = next.lastTurnEnd
+    const hasNewTurnEnd = sameSession && !readyBaseline && turnEnd !== undefined
+      && turnEnd.seq > this.lastNotifiedTurnEndSeq
+    if (hasNewTurnEnd) this.lastNotifiedTurnEndSeq = turnEnd.seq
+    if (!this.notificationsArmed || !sameSession) return undefined
+
+    if (next.interaction !== undefined && previous.interaction === undefined) {
+      return next.interaction.kind === 'approval'
+        ? `需要授权：${next.interaction.toolName}`
+        : '需要回答问题'
+    }
+    if (hasNewTurnEnd) return turnCompletionMessage(turnEnd.kind)
+
+    // Host status and durable turn/end arrive on separate streams. If the
+    // latter already announced this turn, suppress the follow-up status edge.
+    if (previous.running && !next.running) {
+      if (turnEnd !== undefined && turnEnd.seq === this.lastNotifiedTurnEndSeq) return undefined
+      return '执行结束'
+    }
+    return undefined
+  }
+
   private update(next: TuiViewState): void {
     if (this.stopped) return
+    const previous = this.state
+    const notification = this.notificationForTransition(previous, next)
     const nextInteractionKey = interactionKey(next)
     if (nextInteractionKey !== this.currentInteractionKey) {
       this.currentInteractionKey = nextInteractionKey
@@ -136,8 +284,10 @@ export class TerminalApplication {
     }
     this.state = next
     this.view.update(next, this.question)
+    this.syncTerminal(next)
     this.tui.setFocus(this.view.focusTarget)
     this.tui.requestRender()
+    if (notification !== undefined) this.notify(notification)
   }
 
   /** Repaint after local flow changes that produced no new controller snapshot. */

@@ -82,6 +82,7 @@ export function apply(ctx: Context, config: Config): void {
         selected.remote
           ? {}
           : createLocalExtensions(ctx, { apiProxy, agents, inventory, runner, feedback }),
+        { setTerminalTitle: title => { application?.setTitle(title) } },
       )
       application = new TerminalApplication(controller, controllerConfig, {
         terminal: internals.createTerminal(),

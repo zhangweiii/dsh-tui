@@ -33,6 +33,8 @@ HTTP 连接只允许 `localhost`、`*.localhost`、`127.0.0.0/8` 和 `[::1]`；�
 
 应用使用 `TuiAltScreen`、`VStack` 和 `ScrollView` 构造固定高度布局。备用屏幕、同步差分刷新、鼠标与触控板滚动、滚动条、选区复制和终端模式恢复全部由 pi-tui 管理；本包不实现终端重绘或滚动偏移算法。鼠标滚轮和 PageUp/PageDown 滚动 transcript，Ctrl+Shift+F 搜索，Ctrl+Shift+Up/Down 在用户消息之间跳转，Ctrl+Shift+Home/End 到达开头或末尾。用户离开底部阅读历史时，新流式内容不会强制把视口拉回末尾；回到底部后自动恢复跟随。应用的视觉语言与 pi coding agent 的暗色主题（VS Code Dark+）保持一致：用户消息渲染为整行背景气泡，思考/reasoning 为灰色斜体，标题为柔和的琥珀色，链接与列表符号使用 teal 强调色；围栏代码块（```lang … ```）保留灰色围栏并做逐 token 语法高亮。流式生成的回答在生成过程中就呈现同样的形态，而不是一段无色的原始代码。注入的上下文行（skill 目录、插件上下文、工作区指令、会话召回等）、工具输出、压缩摘要和重试说明都默认折叠成一行标题，像 Web 的 disclosure row 一样，避免长启动上下文和冗长工具输出塞满 transcript；运行中的行保持展开，以便实时输出可见。Ctrl+Shift+E 展开最近折叠的行，反复按会依次展开更早的折叠行，全部展开后下一次按键会把它们重新全部折叠。Ctrl+T 展开或折回输入框上方的 todo/任务 活动栏
 
+终端集成使用业内通用的 OSC 控制序列族而不是私有协议：窗口/标签页标题通过 pi-tui 的 OSC 0 实现；turn 运行期间标题会显示类似 pi 的 Braille 转圈动画。turn 完成、启动失败、出现 approval/question 请求等重要节点默认使用 OSC 777 通知；iTerm2 使用 OSC 9，Kitty 使用其 OSC 99 协议，tmux 下会使用 passthrough 转发。桌面通知的 OSC 没有跨终端统一标准；序列使用 BEL 作为终止符，因此仍保留通常的终端响铃 fallback。不支持该序列的终端会忽略它。显式 `/title <title>` 只覆盖当前 TUI 进程的终端标题；没有显式覆盖时，`/rename` 仍然重命名持久化 session，并同步自动终端标题。
+
 ## 终端管理命令
 
 TUI 自己持有的命令会打开终端原生面板。其他 slash command 仍作为普通 Harness command 或 skill 调用处理。
@@ -41,7 +43,7 @@ TUI 自己持有的命令会打开终端原生面板。其他 slash command 仍�
 |---|---|
 | `/help`、`/status`、`/close` | 显示命令参考、运行与 projection 状态，或关闭当前面板。 |
 | `/sessions [query]`、`/new [cwd]`、`/resume [id-or-prefix]` | 选择、搜索或创建持久化会话；`/sessions` 以及省略 id 的 `/resume` 会打开选择器。 |
-| `/rename <title>`、`/fork [event-seq]`、`/older` | 重命名、分叉，或向前分页读取持久化 history。 |
+| `/rename <title>`、`/title <title>`、`/fork [event-seq]`、`/older` | 重命名 session、设置终端窗口/标签页标题、分叉，或向前分页读取持久化 history。`/title` 只作用于当前 TUI 进程，不会持久化。 |
 | `/archive [session-id] --yes`、`/export [path] [--descendants]` | 归档 session，或导出日志及其引用的 media。 |
 | `/models`、`/model [provider/model] [effort]` | 直接选择模型；显式 route 则直接切换。 |
 | `/providers`、`/provider-models [provider]`、`/discover-models <settings-ns> …` | 选择 provider/model，或从 endpoint 发现 model。 |
@@ -74,7 +76,7 @@ TUI 自己持有的命令会打开终端原生面板。其他 slash command 仍�
 
 共享命令 `/plan` 和 `/compact` 与其他未知 slash command 一样，原样交给 Harness 命令或 skill 路径；它们的持久化生命周期会回到同一个 transcript。`/permission` 由 TUI 本地拦截，打开一个可上下选择的权限模式列表（来自 `permissions` projection），选中后把 `/permission <preset>` 交回 Harness 完成切换。
 
-对话状态来自持久化 history、mux stream 和 Host stream。终端会折叠 assistant 文本与 reasoning、注入的模型上下文、命令与压缩和模型重试生命周期、Host 提供的工具 presentation、作为去重产物行显示的成功 mutation location、持久化 workflow run 及其 member 状态、稳定的 assistant message id、待处理 queue item、后台 job、todo、goal 与其他 projection value、运行状态和实时错误。已完成的 assistant 与 reasoning 文本由 pi-tui `Markdown` 展示标题、强调、列表、引用、代码块、链接和表格；原始 HTML 显示为文本，支持 OSC 8 的终端会把链接显示为可点击链接，流式尾部则保留为紧凑纯文本。界面不再常驻页头；输入区下方的 footer 展示运行状态、agent preset、模型、cwd、会话轮次与步骤、累计 token、上下文占用与权限模式，计划模式仅在开启或切换中时出现；宽度足够时折叠为单行，不足时按均匀宽度拆成两行。输入区上方的紧凑活动栏只在存在未完成 todo 或活跃 goal、queue、job、workflow 时出现。有未完成 todo 时它默认折叠为一行：同一行显示进度计数（已办/总数）、当前正在执行的 todo 与后台任务摘要，按 Ctrl+T 展开成按类别分节的完整清单——「待办」(已完成的标 ✓ 并置灰、正在执行的标 ◆ 高亮、未开始的标 ·) 与「任务（后台）」(运行中 ●、待停 ◌、失败 ✗；已结束的 job 不再占据活动栏) 各占一节，再按一次收回。`/status` 展示完整 projection 构成与图片限制。`ScrollView` 按渲染行约束 transcript，任何长文本都不能覆盖固定的活动栏、编辑器或 footer。产物路径可以直接交给 `/open`；未结束的工具或 workflow 会在其所属 turn 关闭时标记为中断。history/live 边界按 sequence 去重，surface replacement 不会重复渲染压缩 checkpoint；可回答的 approval 与 question frame 会回填原始 RPC identity。
+对话状态来自持久化 history、mux stream 和 Host stream。终端会折叠 assistant 文本与 reasoning、注入的模型上下文、命令与压缩和模型重试生命周期、Host 提供的工具 presentation、作为去重产物行显示的成功 mutation location、持久化 workflow run 及其 member 状态、稳定的 assistant message id、待处理 queue item、后台 job、todo、goal 与其他 projection value、运行状态和实时错误。已完成的 assistant 与 reasoning 文本由 pi-tui `Markdown` 展示标题、强调、列表、引用、代码块、链接和表格；原始 HTML 显示为文本，支持 OSC 8 的终端会把链接显示为可点击链接，流式尾部则保留为紧凑纯文本。界面不再常驻页头；输入区下方的 footer 展示运行状态、agent preset、模型、cwd、会话轮次与步骤、累计 token、cache 命中率、上下文占用与权限模式，计划模式仅在开启或切换中时出现；宽度足够时折叠为单行，不足时按均匀宽度拆成两行。输入区上方的紧凑活动栏只在存在未完成 todo 或活跃 goal、queue、job、workflow 时出现。有未完成 todo 时它默认折叠为一行：同一行显示进度计数（已办/总数）、当前正在执行的 todo 与后台任务摘要，按 Ctrl+T 展开成按类别分节的完整清单——「待办」(已完成的标 ✓ 并置灰、正在执行的标 ◆ 高亮、未开始的标 ·) 与「任务（后台）」(运行中 ●、待停 ◌、失败 ✗；已结束的 job 不再占据活动栏) 各占一节，再按一次收回。`/status` 展示完整 projection 构成与图片限制。`ScrollView` 按渲染行约束 transcript，任何长文本都不能覆盖固定的活动栏、编辑器或 footer。产物路径可以直接交给 `/open`；未结束的工具或 workflow 会在其所属 turn 关闭时标记为中断。history/live 边界按 sequence 去重，surface replacement 不会重复渲染压缩 checkpoint；可回答的 approval 与 question frame 会回填原始 RPC identity。
 
 ## 模型体验
 

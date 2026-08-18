@@ -69,6 +69,21 @@ describe('TuiController', () => {
     controller.dispose()
   })
 
+  it('sets the terminal title through the renderer side-effect seam without persisting it', async () => {
+    const fake = fakeApi({ items: [summary(SID)] })
+    const setTerminalTitle = vi.fn()
+    const controller = new TuiController(fake.api, {}, { setTerminalTitle })
+    await controller.start({ continueLatest: false, resume: SID })
+    await new Promise(resolve => setTimeout(resolve, 10))
+
+    await controller.submit('/title "窗口标题"')
+
+    expect(setTerminalTitle).toHaveBeenCalledWith('窗口标题')
+    expect(fake.api.sessions.rename).not.toHaveBeenCalled()
+    expect(controller.getSnapshot().notice).toBe('终端标题已设置为 窗口标题')
+    controller.dispose()
+  })
+
   it('attaches a resumed session to the workspace for its recorded directory', async () => {
     const fake = fakeApi({ items: [summary()] })
     const controller = new TuiController(fake.api)

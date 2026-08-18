@@ -1256,6 +1256,7 @@ function renderStatus(state: TuiViewState, width: number): string[] {
     state.cwd === undefined ? undefined : ansi.dim(shorten(state.cwd, Math.max(18, Math.floor(width / 3)))),
     status.session === undefined ? undefined : `${String(status.session.turns)} 轮 · ${String(status.session.steps)} 步`,
     status.tokens === undefined ? undefined : `↑${formatCompact(status.tokens.input)} ↓${formatCompact(status.tokens.output)}`,
+    status.cacheHitRate === undefined ? undefined : `cache ${String(status.cacheHitRate)}%`,
     context,
     contextWindow === undefined ? undefined : formatCompact(contextWindow),
     state.queueSize > 0 ? `队列 ${String(state.queueSize)}` : undefined,

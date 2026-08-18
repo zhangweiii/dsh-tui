@@ -5,7 +5,8 @@ import z from '@deepseek-ai/schemastery'
 import { apply as mount } from './app.ts'
 
 export { internals } from './app.ts'
-export { TerminalApplication } from './terminal.ts'
+export { TerminalApplication, type TerminalApplicationOptions } from './terminal.ts'
+export type { TerminalNotificationEnvironment } from './terminal-controls.ts'
 
 /** Stable Cordis plugin name. */
 export const name = 'tui-app'

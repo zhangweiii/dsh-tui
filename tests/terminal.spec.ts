@@ -217,6 +217,7 @@ describe('pi-tui terminal application', () => {
     expect(count(viewport, 'DEEPSEEK HARNESS TUI')).toBe(0)
     expect(count(viewport, '轮')).toBe(1)
     expect(viewport).toContain('8 轮 · 9 步')
+    expect(viewport).toContain('cache 57%')
     expect(viewport).not.toContain('**验证结果：**')
     expect(viewport).toContain('验证结果：')
     expect(viewport).toContain('第一项')
@@ -940,6 +941,145 @@ describe('pi-tui terminal application', () => {
     expect(viewport).toContain('console.log(a)')
     expect(viewport).toContain('```')
     expect(viewport).not.toContain('partialText')
+    application.stop()
+  })
+
+  it('tracks the session title, supports an explicit title, and notifies on lifecycle nodes', async () => {
+    const terminal = new TestTerminal(100, 16)
+    const controller = new TestController({ title: '会话标题' })
+    const application = new TerminalApplication(controller.asController(), { continueLatest: false }, {
+      terminal, notificationEnvironment: {},
+    })
+    application.start()
+    await settle(terminal)
+
+    expect(terminal.writes).toContain('\u001B]0;会话标题\u0007')
+
+    terminal.writes.length = 0
+    controller.publish({ title: '自动更新标题' })
+    await settle(terminal)
+    expect(terminal.writes).toContain('\u001B]0;自动更新标题\u0007')
+
+    terminal.writes.length = 0
+    application.setTitle('手动标题')
+    controller.publish({ title: '不会覆盖手动标题' })
+    await settle(terminal)
+    expect(terminal.writes).toContain('\u001B]0;手动标题\u0007')
+    expect(terminal.writes).not.toContain('\u001B]0;不会覆盖手动标题\u0007')
+
+    terminal.writes.length = 0
+    controller.publish({ lastTurnEnd: { seq: 1, turn: 1, kind: 'completed' }, running: false })
+    await settle(terminal)
+    expect(terminal.writes).toContain('\u001B]777;notify;dsh;执行完成\u0007')
+
+    // The host status edge can arrive after turn/end; it must not announce the
+    // same completion twice.
+    terminal.writes.length = 0
+    controller.publish({ running: true })
+    await settle(terminal)
+    terminal.writes.length = 0
+    controller.publish({ running: false })
+    await settle(terminal)
+    expect(terminal.writes).not.toContain('\u001B]777;notify;dsh;执行结束\u0007')
+
+    terminal.writes.length = 0
+    controller.publish({
+      interaction: {
+        kind: 'approval', rpcId: 'rpc-approval' as never, sessionId: 'session' as never,
+        approvalId: 'approval' as never, toolName: 'write_file',
+      },
+    })
+    await settle(terminal)
+    expect(terminal.writes).toContain('\u001B]777;notify;dsh;需要授权：write_file\u0007')
+    application.stop()
+  })
+
+  it('animates the terminal title while a turn is running', async () => {
+    const terminal = new TestTerminal(100, 16)
+    const controller = new TestController({ title: '会话标题' })
+    const application = new TerminalApplication(controller.asController(), { continueLatest: false }, { terminal })
+    application.start()
+    await settle(terminal)
+
+    try {
+      terminal.writes.length = 0
+      controller.publish({ running: true })
+      await settle(terminal)
+      expect(terminal.writes).toContain('\u001B]0;⠋ 会话标题\u0007')
+
+      terminal.writes.length = 0
+      await new Promise(resolve => setTimeout(resolve, 100))
+      await terminal.flush()
+      expect(terminal.writes).toContain('\u001B]0;⠙ 会话标题\u0007')
+
+      terminal.writes.length = 0
+      controller.publish({ running: false })
+      await settle(terminal)
+      expect(terminal.writes).toContain('\u001B]0;会话标题\u0007')
+
+      terminal.writes.length = 0
+      await new Promise(resolve => setTimeout(resolve, 100))
+      await terminal.flush()
+      expect(terminal.writes).toEqual([])
+    } finally {
+      application.stop()
+    }
+  })
+
+  it('does not announce the loaded session historical turn end when switching sessions', async () => {
+    const terminal = new TestTerminal(100, 16)
+    // Mimic the real app's initial snapshot: phase 'loading', no session yet.
+    const controller = new TestController({ phase: 'loading' })
+    const application = new TerminalApplication(controller.asController(), {
+      continueLatest: false,
+    }, { terminal, notificationEnvironment: {} })
+    application.start()
+    await settle(terminal)
+
+    // First session load: a loading snapshot followed by the ready baseline.
+    controller.publish({ sessionId: 'session-a' as never })
+    controller.publish({ phase: 'ready', lastTurnEnd: { seq: 12, turn: 3, kind: 'completed' } })
+    await settle(terminal)
+    expect(terminal.writes).not.toContain('\u001B]777;notify;dsh;执行完成\u0007')
+
+    // Switching to another session re-loads its history; its past turn ends
+    // must not notify either, only the live ones that follow.
+    terminal.writes.length = 0
+    controller.publish({ sessionId: 'session-b' as never, phase: 'loading', lastTurnEnd: undefined })
+    controller.publish({ phase: 'ready', lastTurnEnd: { seq: 30, turn: 5, kind: 'completed' } })
+    await settle(terminal)
+    expect(terminal.writes).not.toContain('\u001B]777;notify;dsh;执行完成\u0007')
+
+    // A live turn end after the switch still notifies.
+    terminal.writes.length = 0
+    controller.publish({ lastTurnEnd: { seq: 31, turn: 6, kind: 'completed' }, running: false })
+    await settle(terminal)
+    expect(terminal.writes).toContain('\u001B]777;notify;dsh;执行完成\u0007')
+    application.stop()
+  })
+
+  it('switching away from a running session does not announce a fake turn end', async () => {
+    const terminal = new TestTerminal(100, 16)
+    const controller = new TestController({ phase: 'loading', running: true })
+    const application = new TerminalApplication(controller.asController(), {
+      continueLatest: false,
+    }, { terminal, notificationEnvironment: {} })
+    application.start()
+    await settle(terminal)
+
+    // First session loads while a turn is running.
+    controller.publish({ sessionId: 'session-a' as never })
+    controller.publish({ phase: 'ready', lastTurnEnd: { seq: 12, turn: 3, kind: 'completed' } })
+    await settle(terminal)
+    expect(terminal.writes).not.toContain('\u001B]777;notify;dsh;执行完成\u0007')
+
+    // Switching to an idle session flips running true→false, but that edge
+    // belongs to the previous session and must stay silent.
+    terminal.writes.length = 0
+    controller.publish({ sessionId: 'session-b' as never, phase: 'loading', running: false, lastTurnEnd: undefined })
+    controller.publish({ phase: 'ready' })
+    await settle(terminal)
+    expect(terminal.writes.filter(w => w.includes('notify'))).toEqual([])
     application.stop()
   })
 })

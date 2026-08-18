@@ -121,6 +121,8 @@ export interface TuiViewState {
   phase: 'loading' | 'ready' | 'error'
   sessionId: SessionId | undefined
   title: string | undefined
+  /** Latest durable turn boundary, used for terminal-level completion notices. */
+  lastTurnEnd?: { seq: number; turn: number; kind: string }
   agentPreset: string | undefined
   cwd: string | undefined
   model: string | undefined
@@ -173,6 +175,8 @@ export interface TuiProjectionStatus {
   contextWindow?: number
   contextBreakdown?: { system: number; tools: number; messages: number }
   tokens?: { input: number; output: number }
+  /** Cumulative prompt-cache hit rate, as a percentage between 0 and 100. */
+  cacheHitRate?: number
   session?: { turns: number; steps: number }
   images?: { maximum: number; maximumBytes: number }
 }
@@ -186,6 +190,7 @@ export function createInitialState(): TuiViewState {
     phase: 'loading',
     sessionId: undefined,
     title: undefined,
+    lastTurnEnd: undefined,
     agentPreset: undefined,
     cwd: undefined,
     model: undefined,
@@ -420,7 +425,10 @@ export function projectionStatus(projections: Record<string, unknown>): TuiProje
   const cacheWrite = finiteNumber(tokenUsage, 'cacheWriteTokens')
   const output = finiteNumber(tokenUsage, 'outputTokens')
   if (uncached !== undefined && cacheRead !== undefined && cacheWrite !== undefined && output !== undefined) {
-    result.tokens = { input: uncached + cacheRead + cacheWrite, output }
+    const input = uncached + cacheRead + cacheWrite
+    result.tokens = { input, output }
+    // Cache writes are non-hit input, so the hit rate is cacheRead / total input.
+    if (input > 0) result.cacheHitRate = Math.round(cacheRead / input * 100)
   }
 
   const stats = object(projections.sessionStats)
@@ -899,6 +907,12 @@ export function applySessionEvent(
       next = interruptRunningWorkflows(next, event.seq)
       next = interruptRunningTools(next, event.seq)
       const retried = Object.values(next.retryTurns).includes(event.data.turn)
+      if (!retried) {
+        next = {
+          ...next,
+          lastTurnEnd: { seq: event.seq, turn: event.data.turn, kind: event.data.reason.kind },
+        }
+      }
       next = settleRetries(
         next,
         event.data.turn,

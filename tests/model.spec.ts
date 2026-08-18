@@ -62,6 +62,7 @@ describe('tui view projection', () => {
       turn: 1, reason: { kind: 'error', error: { code: 'MODEL', message: '不可用' } },
     }))
     expect(state.todos).toEqual([{ content: '完成 TUI', status: 'in_progress' }])
+    expect(state.lastTurnEnd).toEqual({ seq: 3, turn: 1, kind: 'error' })
     expect(state.rows.at(-1)).toMatchObject({ kind: 'error', text: 'MODEL: 不可用' })
   })
 
@@ -202,6 +203,7 @@ describe('tui view projection', () => {
     expect(state.rows.find(row => row.id === 'tool-failed-call')).toMatchObject({ status: 'failed' })
     expect(state.rows.find(row => row.id === 'tool-open-call')).toMatchObject({ status: 'interrupted' })
     expect(state.rows.find(row => row.id === 'retry-retry-1')).toMatchObject({ status: 'failed' })
+    expect(state.lastTurnEnd).toBeUndefined()
     expect(state.rows.some(row => row.kind === 'error')).toBe(false)
   })
 
@@ -365,6 +367,7 @@ describe('tui view projection', () => {
       contextWindow: 100_000,
       contextBreakdown: { system: 1000, tools: 2000, messages: 3000 },
       tokens: { input: 60, output: 40 },
+      cacheHitRate: 33,
       session: { turns: 2, steps: 5 },
       images: { maximum: 4, maximumBytes: 8_388_608 },
     })
