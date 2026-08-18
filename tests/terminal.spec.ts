@@ -377,7 +377,25 @@ describe('pi-tui terminal application', () => {
     expect(terminal.viewport()).toContain('rename')
     expect(terminal.viewport()).toContain('resume')
 
+    // Ctrl+N moves the autocomplete highlight down; Tab completes the item.
+    terminal.send('\u000E')
+    await settle(terminal)
+    terminal.send('\t')
+    await settle(terminal)
+    expect(application.view.editor.getText()).toBe('/rename ')
+
+    // Ctrl+N down then Ctrl+P up returns to the first item again.
     terminal.send('\u001B')
+    terminal.send('/')
+    terminal.send('r')
+    await settle(terminal)
+    terminal.send('\u000E')
+    terminal.send('\u0010')
+    await settle(terminal)
+    terminal.send('\t')
+    await settle(terminal)
+    expect(application.view.editor.getText()).toBe('/resume ')
+
     terminal.send('\u001B')
     terminal.send('保')
     terminal.send('留')
@@ -391,7 +409,9 @@ describe('pi-tui terminal application', () => {
       },
     })
     await settle(terminal)
-    terminal.send('\u001B[B')
+    // Ctrl+N moves the picker highlight down (same binding as the Down arrow);
+    // Enter confirms the highlighted item.
+    terminal.send('\u000E')
     terminal.send('\r')
     await settle(terminal)
     expect(controller.pickerValues).toEqual(['p/b'])
@@ -407,10 +427,10 @@ describe('pi-tui terminal application', () => {
       },
     })
     await settle(terminal)
-    // The single-select question renders as an arrow-navigable menu: Down moves
-    // the highlight to B, Enter confirms it. A one-question batch skips the
+    // The single-select question renders as an arrow-navigable menu: Ctrl+N
+    // moves the highlight to B, Enter confirms it. A one-question batch skips the
     // review summary and sends the answer to the host right away.
-    terminal.send('\u001B[B')
+    terminal.send('\u000E')
     terminal.send('\r')
     await settle(terminal)
     expect(controller.questionAnswers).toEqual([{ answers: [{ id: 'choice', selected: ['B'] }] }])
@@ -428,6 +448,38 @@ describe('pi-tui terminal application', () => {
     await settle(terminal)
     terminal.send('y')
     expect(controller.approvals).toEqual(['allowed-once'])
+    application.stop()
+  })
+
+  it('mirrors Up/Down in the composer with Ctrl+P/N: history and cursor movement', async () => {
+    const terminal = new TestTerminal(110, 24)
+    const controller = new TestController()
+    const application = new TerminalApplication(controller.asController(), { continueLatest: false }, { terminal })
+    application.start()
+    terminal.send('历史')
+    terminal.send('一')
+    terminal.send('\r')
+    await settle(terminal)
+    expect(controller.submissions).toEqual([{ text: '历史一', mode: 'queue' }])
+
+    // Ctrl+P recalls the previous history entry (like Up on an empty draft)…
+    terminal.send('\u0010')
+    await settle(terminal)
+    expect(application.view.editor.getText()).toBe('历史一')
+
+    // …and Ctrl+N returns to the empty draft (like Down at the newest entry).
+    terminal.send('\u000E')
+    await settle(terminal)
+    expect(application.view.editor.getText()).toBe('')
+
+    // On a multi-line draft Ctrl+P/N move the cursor like Up/Down.
+    terminal.send('第一行')
+    terminal.send('\n')
+    terminal.send('第二行')
+    terminal.send('\u0010')
+    terminal.send('插')
+    await settle(terminal)
+    expect(application.view.editor.getText()).toBe('第一行插\n第二行')
     application.stop()
   })
 
@@ -455,7 +507,7 @@ describe('pi-tui terminal application', () => {
 
     // The submission is rejected: the question must reopen (not a stuck pending
     // state) so the user can answer again.
-    expect(terminal.viewport()).toContain('↑/↓ 选择')
+    expect(terminal.viewport()).toContain('↑/↓ 或 Ctrl+N/P 选择')
     expect(terminal.viewport()).not.toContain('请确认你的回答')
 
     // Answering again with '稳' now succeeds and sends the revised answer.
@@ -486,7 +538,7 @@ describe('pi-tui terminal application', () => {
     // Options appear once, in the arrow-navigable list, without a separate
     // numbered header listing above it.
     expect(terminal.viewport()).toContain('其他 / 自定义')
-    expect(terminal.viewport()).toContain('↑/↓ 选择')
+    expect(terminal.viewport()).toContain('↑/↓ 或 Ctrl+N/P 选择')
     expect(terminal.viewport()).toContain('快')
     expect(terminal.viewport()).toContain('稳')
     expect(terminal.viewport()).not.toContain('1. 快')
@@ -531,7 +583,7 @@ describe('pi-tui terminal application', () => {
     terminal.send('\u001B')
     await settle(terminal)
     expect(controller.cancelQuestionCount).toBe(0)
-    expect(terminal.viewport()).toContain('↑/↓ 选择')
+    expect(terminal.viewport()).toContain('↑/↓ 或 Ctrl+N/P 选择')
 
     // The trailing entry stays highlighted, so Enter returns to the custom editor.
     terminal.send('\r')
@@ -646,15 +698,15 @@ describe('pi-tui terminal application', () => {
     expect(terminal.viewport()).toContain('备注内容')
     expect(terminal.viewport()).toContain('确认提交全部回答')
 
-    // The confirm row is highlighted by default; move Up twice to the first
-    // question row and press Enter to reopen Q1 for revision.
-    terminal.send('\u001B[A')
-    terminal.send('\u001B[A')
+    // The confirm row is highlighted by default; Ctrl+P (same binding as Up)
+    // moves up twice to the first question row and Enter reopens Q1 for revision.
+    terminal.send('\u0010')
+    terminal.send('\u0010')
     terminal.send('\r')
     await settle(terminal)
-    expect(terminal.viewport()).toContain('↑/↓ 选择')
-    // Switch from 乙 back to 甲 (default), then answer Q2 again.
-    terminal.send('\u001B[A')
+    expect(terminal.viewport()).toContain('↑/↓ 或 Ctrl+N/P 选择')
+    // Switch from 乙 back to 甲: Ctrl+P clamps on the first option (default).
+    terminal.send('\u0010')
     terminal.send('\r')
     await settle(terminal)
     terminal.send('改后的备注')
@@ -664,7 +716,11 @@ describe('pi-tui terminal application', () => {
     expect(terminal.viewport()).toContain('甲')
     expect(terminal.viewport()).toContain('改后的备注')
 
-    // Confirm the revised batch; the confirm row starts highlighted again.
+    // The confirm row starts highlighted again; Ctrl+P up to the second
+    // question row, then Ctrl+N back down to the confirm row, which sends the
+    // revised batch.
+    terminal.send('\u0010')
+    terminal.send('\u000E')
     terminal.send('\r')
     await settle(terminal)
     expect(controller.questionAnswers).toEqual([{
@@ -697,6 +753,60 @@ describe('pi-tui terminal application', () => {
     terminal.send('\r')
     await settle(terminal)
     expect(controller.pickerValues).toEqual(['google'])
+    application.stop()
+  })
+
+  it('moves the provider search highlight with Ctrl+N/P like every other list', async () => {
+    const terminal = new TestTerminal(100, 16)
+    const controller = new TestController({
+      picker: {
+        kind: 'provider-setup', title: '配置 Provider', current: undefined,
+        items: [
+          { value: 'google', label: 'Google', description: '密钥未配置 · google' },
+          { value: 'openai', label: 'OpenAI', description: '密钥已配置 · openai' },
+        ],
+      },
+    })
+    const application = new TerminalApplication(controller.asController(), { continueLatest: false }, { terminal })
+    application.start()
+    // 'o' matches both; fuzzy ranking puts OpenAI first. Ctrl+N moves the
+    // highlight down to Google, Ctrl+P back up to OpenAI, Enter confirms it.
+    terminal.send('o')
+    await settle(terminal)
+    expect(terminal.viewport()).toContain('Google')
+    expect(terminal.viewport()).toContain('OpenAI')
+    terminal.send('\u000E')
+    terminal.send('\u0010')
+    terminal.send('\r')
+    await settle(terminal)
+    expect(controller.pickerValues).toEqual(['openai'])
+    application.stop()
+  })
+
+  it('moves the provider wizard protocol menu with Ctrl+N/P', async () => {
+    const terminal = new TestTerminal(100, 16)
+    const wizard = {
+      kind: 'custom' as const, namespace: 'llm-pi-ai', settingsPath: ['providers'], revision: 8,
+      providerId: '', declared: true, taken: [], protocols: ['openai-completions', 'anthropic'],
+      displayName: '', baseURL: '', api: 'openai-completions', apiKey: '', models: [],
+      candidates: [], selectedCandidates: [], credentialRef: '', credentialRefNamed: false, supportsCredentialRef: true,
+      credentialConfigured: false, profileConfigured: false,
+      dirty: [], committed: false, busy: false, applies: 'live' as const,
+      step: 'api' as const, editing: undefined,
+    }
+    const controller = new TestController({ providerWizard: wizard })
+    const application = new TerminalApplication(controller.asController(), { continueLatest: false }, { terminal })
+    application.start()
+    await settle(terminal)
+    expect(terminal.viewport()).toContain('↑/↓ 或 Ctrl+N/P 选择协议')
+
+    // Ctrl+N moves the highlight to anthropic, Ctrl+P back to the default
+    // openai-completions, Enter confirms the highlighted row.
+    terminal.send('\u000E')
+    terminal.send('\u0010')
+    terminal.send('\r')
+    await settle(terminal)
+    expect(controller.wizardRows).toEqual([0])
     application.stop()
   })
 
@@ -782,5 +892,54 @@ describe('pi-tui terminal application', () => {
     expect(terminal.stopCount).toBe(1)
     expect(terminal.writes.join('')).toContain('\u001B[?1049h')
     expect(terminal.writes.join('')).toContain('\u001B[?1049l')
+  })
+
+  it('keeps code-block fences and highlights their syntax in assistant rows', async () => {
+    const terminal = new TestTerminal(100, 26)
+    const controller = new TestController({
+      rows: [{
+        id: 'assistant-1', seq: 1, kind: 'assistant', text: '下面是一个示例：\n\n```ts\nconst x = 1\nconsole.log(x)\n```\n\n说明文字。',
+      }] as never,
+    })
+    const application = new TerminalApplication(controller.asController(), { continueLatest: false }, { terminal })
+    application.start()
+    await settle(terminal)
+
+    const viewport = terminal.viewport()
+    expect(viewport).toContain('```ts')
+    expect(viewport).toContain('const x = 1')
+    expect(viewport).toContain('console.log(x)')
+    // Opening and closing fences both stay visible.
+    expect((viewport.match(/```/g) ?? []).length).toBeGreaterThanOrEqual(2)
+    // The box-drawing experiment is gone; code keeps the fence + per-token colors.
+    expect(viewport).not.toContain('┌─')
+    expect(viewport).not.toContain('└─')
+    application.stop()
+  })
+
+  it('renders user-sent and streamed code fences with syntax highlighting', async () => {
+    const terminal = new TestTerminal(100, 26)
+    const controller = new TestController({
+      rows: [{ id: 'user-1', seq: 0, kind: 'user', text: '请运行：\n\n```bash\nls -la\n```' }] as never,
+      running: true,
+    })
+    const application = new TerminalApplication(controller.asController(), { continueLatest: false }, { terminal })
+    application.start()
+    await settle(terminal)
+
+    let viewport = terminal.viewport()
+    expect(viewport).toContain('```bash')
+    expect(viewport).toContain('ls -la')
+
+    // The streamed tail keeps only the freshest lines: code and closing fence
+    // stay visible while the block builds.
+    controller.publish({ partialText: '```ts\nconst a = 1\nconsole.log(a)\n```' })
+    await settle(terminal)
+    viewport = terminal.viewport()
+    expect(viewport).toContain('const a = 1')
+    expect(viewport).toContain('console.log(a)')
+    expect(viewport).toContain('```')
+    expect(viewport).not.toContain('partialText')
+    application.stop()
   })
 })

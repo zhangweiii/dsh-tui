@@ -145,6 +145,8 @@ export interface TuiViewState {
   picker: TuiPicker | undefined
   providerWizard: TuiProviderWizard | undefined
   notice: string | undefined
+  /** Navigation depth into subagent transcripts; 0 means the main session flow. */
+  subagentDepth: number
   lastSeq: number
   /** In-flight mutation calls; each entry is consumed by its `tool/result`. */
   mutationCalls: Record<string, { turn: number; paths: string[] }>
@@ -207,6 +209,7 @@ export function createInitialState(): TuiViewState {
     picker: undefined,
     providerWizard: undefined,
     notice: undefined,
+    subagentDepth: 0,
     lastSeq: -1,
     mutationCalls: {},
     producedFiles: {},

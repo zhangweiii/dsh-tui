@@ -2,7 +2,7 @@
 
 import type { AskUserQuestionAnswerItem, AskUserQuestionItem } from '@deepseek-ai/dsh-user-questions/types'
 import {
-  Editor, fuzzyFilter, Input, Markdown, matchesKey, ScrollView, SelectList, stripTerminalSequences, Text, truncateToWidth, visibleWidth, VStack,
+  Editor, fuzzyFilter, getKeybindings, Input, Markdown, matchesKey, ScrollView, SelectList, stripTerminalSequences, Text, truncateToWidth, visibleWidth, VStack,
   wrapTextWithAnsi, type Component, type Focusable, type SelectItem, type TUI,
 } from '@earendil-works/pi-tui'
 import {
@@ -11,9 +11,11 @@ import {
 } from './model.ts'
 import { providerSetupRows, providerSetupValidation, type ProviderSetupField } from './provider-setup.ts'
 import { formatCompact, oneLine, shorten } from './format.ts'
-import { ansi, editorTheme, markdownTheme, selectListTheme } from './theme.ts'
+import { ansi, editorTheme, markdownTheme, palette, selectListTheme } from './theme.ts'
 
 const OSC133_PROMPT_START = '\u001B]133;A\u0007'
+const OSC133_ZONE_END = '\u001B]133;B\u0007'
+const OSC133_ZONE_FINAL = '\u001B]133;C\u0007'
 
 /** Change-detection signature for a list of picker/menu items. */
 function itemsSignature(items: readonly { value: string; label?: string | undefined; description?: string | undefined }[]): string {
@@ -87,7 +89,7 @@ function statusIcon(row: TranscriptRow): string {
 function statusStyle(row: TranscriptRow): (text: string) => string {
   if (row.status === 'failed') return ansi.red
   if (row.status === 'completed') return ansi.green
-  if (row.status === 'running') return ansi.cyan
+  if (row.status === 'running') return palette.accent
   return ansi.gray
 }
 
@@ -105,6 +107,22 @@ const COLLAPSED_MARKER = '▸'
 const EXPANDED_MARKER = '▾'
 
 /**
+ * Clip a Markdown block after a fixed number of lines within the given width.
+ * Code fences keep their ``` borders and highlight through `markdownTheme`.
+ */
+function markdownTail(text: string, width: number, maximum: number): string[] {
+  // Budget the source first so a long stream does not re-parse the whole reply
+  // on every chunk; the freshest lines stay visible, like the reasoning tail.
+  const budget = Math.max(1, width * maximum)
+  const suffix = text.length <= budget ? text : `…${text.slice(-Math.max(1, budget - 1))}`
+  return new Markdown(suffix, 1, 0, markdownTheme, undefined, { preserveOrderedListMarkers: true })
+    .render(width)
+    .map(line => line.trimEnd())
+    .filter(line => line.trim() !== '')
+    .slice(-maximum)
+}
+
+/**
  * One verbose card row, mirroring the Web disclosure row. Rows with a detail
  * (skill catalog, injected context, tool output, compaction, retries, …) render
  * folded into a one-line header so they do not crowd the transcript; the detail
@@ -114,7 +132,10 @@ const EXPANDED_MARKER = '▾'
  * @param expanded - Whether this row's detail is currently unfolded.
  */
 function cardRow(row: TranscriptRow, label: string, expanded: boolean): Component {
-  const style = row.kind === 'context' ? ansi.dim : statusStyle(row)
+  // Compaction summaries use pi's lavender `[compaction]`-style label color.
+  const style = row.kind === 'compaction'
+    ? palette.secretLabel
+    : row.kind === 'context' ? ansi.dim : statusStyle(row)
   const icon = row.kind === 'context' ? '' : `${statusIcon(row)} `
   const marker = expanded ? EXPANDED_MARKER : COLLAPSED_MARKER
   const children: Component[] = [
@@ -124,8 +145,47 @@ function cardRow(row: TranscriptRow, label: string, expanded: boolean): Componen
   return new VStack(children)
 }
 
+/** Full-width horizontal rule that adapts to the render width. */
+function horizontalRule(color: (text: string) => string): Component {
+  return {
+    render: (width: number) => [color('─'.repeat(Math.max(1, width)))],
+    invalidate: () => {},
+  }
+}
+
+/**
+ * Tool card mirroring the pi bash-execution component: bordered top/bottom,
+ * bold status-colored title, and the folded one-line header when collapsed.
+ * The border and title follow the row status like pi's status-colored frames.
+ * @param row - The tool row to render.
+ * @param expanded - Whether this row's output is currently unfolded.
+ */
+function toolCard(row: TranscriptRow, expanded: boolean): Component {
+  const style = statusStyle(row)
+  const marker = expanded ? EXPANDED_MARKER : COLLAPSED_MARKER
+  const header = new Text(`\n${marker} ${style(ansi.bold(`${statusIcon(row)} 工具 · ${row.text}`))}`, 1, 0)
+  // Folded rows keep the compact one-line header; running and expanded rows
+  // render the pi-style bordered card with the output.
+  if (row.status !== 'running' && !expanded) return header
+  const children: Component[] = [
+    horizontalRule(style),
+    header,
+    ...(row.detail === undefined ? [] : [new Text(ansi.dim(limitedLines(row.detail, 12)), 1, 0)]),
+    ...(row.status === 'failed'
+      ? [new Text(ansi.red('(exit 非 0)'), 2, 0)]
+      : row.status === 'cancelled'
+        ? [new Text(ansi.yellow('(已取消)'), 2, 0)]
+        : []),
+    horizontalRule(style),
+  ]
+  return new VStack(children)
+}
+
 function rowComponent(row: TranscriptRow, rowExpanded: boolean): Component {
   const cardLabel = CARD_LABELS[row.kind]
+  if (row.kind === 'tool') {
+    return toolCard(row, rowExpanded)
+  }
   if (cardLabel !== undefined && row.kind !== 'deliverable') {
     return cardRow(row, cardLabel, rowExpanded)
   }
@@ -146,22 +206,24 @@ function rowComponent(row: TranscriptRow, rowExpanded: boolean): Component {
         ? '思考'
         : row.kind === 'error' ? '错误' : '提示'
   const style = row.kind === 'user'
-    ? ansi.magenta
+    ? ansi.bold
     : row.kind === 'assistant'
-      ? ansi.cyan
+      ? palette.accent
       : row.kind === 'error' ? ansi.red : ansi.yellow
   const marker = row.kind === 'user' ? OSC133_PROMPT_START : ''
   const header = new Text(`${marker}\n${style(ansi.bold(`${label}${row.messageId === undefined ? '' : ` · ${shorten(row.messageId, 14)}`}`))}`, 1, 0)
-  const content = row.kind === 'assistant' || row.kind === 'reasoning'
+  // User, assistant, and reasoning rows render Markdown so fenced code blocks
+  // and inline formatting surface as real blocks instead of raw source text.
+  const content = row.kind === 'assistant' || row.kind === 'reasoning' || row.kind === 'user'
     ? new Markdown(
       row.text,
       1,
       0,
       markdownTheme,
-      row.kind === 'reasoning' ? { color: ansi.gray } : undefined,
+      row.kind === 'reasoning' ? { color: ansi.gray, italic: true } : undefined,
       { preserveOrderedListMarkers: true },
     )
-    : new Text(row.text, 1, 0)
+    : row.kind === 'error' ? new Text(ansi.red(row.text), 1, 0) : new Text(row.text, 1, 0)
   return new VStack([header, content])
 }
 
@@ -187,7 +249,7 @@ class TranscriptDocument implements Component {
     if (this.state.rows.length === 0) {
       rendered.push(...new Text(ansi.dim([
         '输入消息开始对话；支持 / 命令、实时工具输出与持久会话。',
-        'Enter 发送 · Tab/↑↓ 补全命令 · Alt+Enter 插话 · Shift+Enter 换行 · Esc 清空/取消 · Ctrl+C 退出',
+        'Enter 发送 · ↑/↓ 或 Ctrl+N/P 历史与补全 · Tab 完成 · Alt+Enter 插话 · Shift+Enter 换行 · Esc 清空/取消 · Ctrl+C 退出',
       ].join('\n')), 1, 1).render(width))
     }
     for (const row of this.state.rows) {
@@ -199,7 +261,25 @@ class TranscriptDocument implements Component {
         cached = { signature, component: rowComponent(row, rowExpanded) }
         this.cache.set(row.id, cached)
       }
-      rendered.push(...cached.component.render(width))
+      const lines = cached.component.render(width)
+      // User messages render as a bubble with the pi user-message background
+      // (full row width, including blank lines, like pi's Box) and the full
+      // OSC133 prompt zone on the first/last line, like pi's message frames.
+      if (row.kind === 'user') {
+        // The leading blank separator line (message spacing) stays transparent;
+        // only the bubble content gets the pi user-message background.
+        let framed = lines.map((line, index) => (
+          index === 0 && stripTerminalSequences(line).trim() === '' ? line : palette.userBg(line)
+        ))
+        const last = framed.length - 1
+        if (last >= 0) framed[last] = `${OSC133_ZONE_END}${OSC133_ZONE_FINAL}${framed[last]}`
+        rendered.push(...framed)
+      } else if (row.kind === 'compaction') {
+        // Compaction summaries sit on pi's custom-message background.
+        rendered.push(...lines.map(line => palette.customBg(line)))
+      } else {
+        rendered.push(...lines)
+      }
     }
     for (const key of this.cache.keys()) if (!retained.has(key)) this.cache.delete(key)
     rendered.push(...this.renderStreamTail(width))
@@ -212,14 +292,25 @@ class TranscriptDocument implements Component {
     if (partialReasoning === '' && partialText === '' && partialTool === undefined) return []
     const lines: string[] = ['']
     if (partialReasoning !== '') {
-      lines.push(ansi.gray(ansi.bold(` ${THINKING_LABEL}`)))
+      lines.push(ansi.gray(ansi.italic(` ${THINKING_LABEL}`)))
       const tail = reasoningTail(partialReasoning, Math.max(1, width - 3), THINKING_TAIL_LINES)
       tail.forEach((line, index) => {
         const marker = index === tail.length - 1 ? ' ▍' : ''
         lines.push(ansi.gray(` ${line}${marker}`))
       })
     }
-    if (partialText !== '') lines.push(ansi.cyan(` ${oneLine(partialText)}▍`))
+    if (partialText !== '') {
+      // Streamed reply text renders through the same Markdown pipeline as the
+      // committed row, so a code block takes shape (boxed) as it streams
+      // instead of showing the raw fence source. Only the freshest lines stay
+      // visible, mirroring the reasoning tail.
+      const tail = markdownTail(partialText, Math.max(1, width - 2), THINKING_TAIL_LINES)
+      if (tail.length > 0) {
+        const last = tail[tail.length - 1] as string
+        tail[tail.length - 1] = `${last}▍`
+        lines.push(...tail)
+      }
+    }
     if (partialTool !== undefined) {
       lines.push(ansi.yellow(` ◆ ${partialTool.name || '工具'} ${oneLine(partialTool.arguments)}`))
     }
@@ -254,7 +345,7 @@ class StateLine implements Component {
   }
 }
 
-const PROMPT_MARKER = `${ansi.cyan(ansi.bold('>'))} `
+const PROMPT_MARKER = `${palette.accent(ansi.bold('>'))} `
 const PROMPT_INDENT = ' '.repeat(visibleWidth('> '))
 
 /**
@@ -456,7 +547,7 @@ class QuestionPicker implements Component, Focusable {
 
   render(width: number): string[] {
     if (this.mode === 'select') {
-      return [...this.list.render(width), ansi.dim('↑/↓ 选择 · Enter 确认 · 输入即 other 自定义 · Esc 取消')]
+      return [...this.list.render(width), ansi.dim('↑/↓ 或 Ctrl+N/P 选择 · Enter 确认 · 输入即 other 自定义 · Esc 取消')]
     }
     return [
       ...this.editorBox.render(width),
@@ -587,15 +678,18 @@ class ProviderSearchPicker implements Component, Focusable {
   invalidate(): void { this.input.invalidate() }
 
   handleInput(data: string): void {
-    if (matchesKey(data, 'up')) {
+    // Same keybindings as every other list: Up/Down or Ctrl+N/P move the
+    // highlight; Escape cancels the search.
+    const kb = getKeybindings()
+    if (kb.matches(data, 'tui.select.up')) {
       if (this.filtered.length > 0) this.selectedIndex = Math.max(0, this.selectedIndex - 1)
       return
     }
-    if (matchesKey(data, 'down')) {
+    if (kb.matches(data, 'tui.select.down')) {
       if (this.filtered.length > 0) this.selectedIndex = Math.min(this.filtered.length - 1, this.selectedIndex + 1)
       return
     }
-    if (matchesKey(data, 'escape')) {
+    if (kb.matches(data, 'tui.select.cancel')) {
       this.cancel()
       return
     }
@@ -614,14 +708,14 @@ class ProviderSearchPicker implements Component, Focusable {
         ? [ansi.dim('  没有匹配的 Provider')]
         : visible.map((item, offset) => {
             const selected = start + offset === this.selectedIndex
-            const prefix = selected ? ansi.cyan('→ ') : '  '
-            const label = selected ? ansi.cyan(item.label) : item.label
+            const prefix = selected ? palette.accent('→ ') : '  '
+            const label = selected ? palette.accent(item.label) : item.label
             const detail = item.description === undefined ? '' : ansi.dim(`  ${item.description}`)
             return truncateToWidth(`${prefix}${label}${detail}`, width)
           })),
       ...(this.filtered.length > maxVisible ? [ansi.dim(`  (${String(this.selectedIndex + 1)}/${String(this.filtered.length)})`)] : []),
       '',
-      ansi.dim('输入搜索 · ↑/↓ 选择 · Enter 确认 · Esc 取消'),
+      ansi.dim('输入搜索 · ↑/↓ 或 Ctrl+N/P 选择 · Enter 确认 · Esc 取消'),
     ]
   }
 }
@@ -729,7 +823,7 @@ class ProviderWizardPicker implements Component, Focusable {
     return [
       ...summary,
       ...this.list.render(width),
-      ansi.dim(wizard?.step === 'api' ? '↑/↓ 选择协议 · Enter 确认 · Esc 取消' : '↑/↓ 选择 · Enter 确认 · Esc 取消'),
+      ansi.dim(wizard?.step === 'api' ? '↑/↓ 或 Ctrl+N/P 选择协议 · Enter 确认 · Esc 取消' : '↑/↓ 或 Ctrl+N/P 选择 · Enter 确认 · Esc 取消'),
     ]
   }
 }
@@ -937,7 +1031,7 @@ export class TerminalView {
         this.composer.set([
           new Text(ansi.green(ansi.bold('请确认你的回答')), 1, 0),
           this.questionReview,
-          new Text(ansi.dim('↑/↓ 查看 · Enter 修改选中项或确认提交 · Esc 取消请求'), 1, 0),
+          new Text(ansi.dim('↑/↓ 或 Ctrl+N/P 查看 · Enter 修改选中项或确认提交 · Esc 取消请求'), 1, 0),
         ], this.questionReview)
         return
       }
@@ -987,11 +1081,22 @@ export class TerminalView {
       this.composer.set([
         new Text(ansi.magenta(ansi.bold(picker.title)), 1, 0),
         this.picker as SelectList,
-        new Text(ansi.dim('↑/↓ 选择 · Enter 确认 · Esc 取消'), 1, 0),
+        new Text(ansi.dim('↑/↓ 或 Ctrl+N/P 选择 · Enter 确认 · Esc 取消'), 1, 0),
       ], this.picker)
       return
     }
     this.clearPicker()
+    if (this.state.subagentDepth > 0) {
+      // Persistent hint while navigating a subagent transcript: the composer
+      // targets the child, so remind the user how to get back to the parent.
+      const depth = this.state.subagentDepth
+      const marker = depth > 1 ? `第 ${String(depth)} 层子代理` : '子代理 transcript'
+      this.composer.set([
+        new Text(`${palette.accent(ansi.bold(`◀ ${marker}`))} ${ansi.dim('· 输入 /back 返回父会话')}`, 1, 0),
+        this.editorBox,
+      ], this.editorBox)
+      return
+    }
     this.composer.set([this.editorBox], this.editorBox)
   }
 }
@@ -1008,7 +1113,7 @@ function questionComponents(question: AskUserQuestionItem, index: number, total:
   // the user types numbers. Rendering both would duplicate every option.
   if (includeOptions) {
     for (const [optionIndex, option] of (question.options ?? []).entries()) {
-      components.push(new Text(`${ansi.cyan(`${String(optionIndex + 1)}.`)} ${option.label}${option.description === undefined ? '' : ` — ${option.description}`}`, 1, 0))
+      components.push(new Text(`${palette.accent(`${String(optionIndex + 1)}.`)} ${option.label}${option.description === undefined ? '' : ` — ${option.description}`}`, 1, 0))
     }
   }
   return components
@@ -1036,7 +1141,7 @@ function isLiveJob(job: { status: string }): boolean {
 
 function jobColor(job: { status: string }): (text: string) => string {
   if (job.status === 'failed') return ansi.red
-  if (job.status === 'running') return ansi.cyan
+  if (job.status === 'running') return palette.accent
   return ansi.dim
 }
 
@@ -1074,7 +1179,7 @@ function renderActivity(state: TuiViewState, expanded: boolean): string[] {
       lines.push(`${ansi.bold(`待办 已办 ${String(completed)}/${String(total)}`)}`)
       for (const todo of state.todos) {
         if (todo.status === 'in_progress') {
-          lines.push(` ${ansi.cyan(ansi.bold('◆'))} ${ansi.bold(oneLine(todo.content))}`)
+          lines.push(` ${palette.accent(ansi.bold('◆'))} ${ansi.bold(oneLine(todo.content))}`)
         } else if (todo.status === 'completed') {
           lines.push(` ${ansi.green('✓')} ${ansi.dim(oneLine(todo.content))}`)
         } else {
@@ -1096,7 +1201,7 @@ function renderActivity(state: TuiViewState, expanded: boolean): string[] {
     }
     if (goal !== undefined) {
       if (lines.length > 0) lines.push('')
-      lines.push(`${ansi.bold(`目标 · ${goal.phase}`)} · ${ansi.cyan(oneLine(goal.objective))}`)
+      lines.push(`${ansi.bold(`目标 · ${goal.phase}`)} · ${palette.accent(oneLine(goal.objective))}`)
     }
     if (queueSummary !== '' && state.queueSize > 0) lines.push(ansi.dim(`队列 ${String(state.queueSize)} · ${queueSummary}`))
     // Keep the whole block separated from both the transcript and the editor.
@@ -1109,7 +1214,7 @@ function renderActivity(state: TuiViewState, expanded: boolean): string[] {
     // job/workflow summary into the same row, followed by goal and queue.
     const todoSummary = inProgress === undefined
       ? remaining.slice(0, 3).map(todo => `· ${oneLine(todo.content)}`).join(' · ')
-      : `${ansi.cyan(ansi.bold('◆'))} ${ansi.bold(oneLine(inProgress.content))}`
+      : `${palette.accent(ansi.bold('◆'))} ${ansi.bold(oneLine(inProgress.content))}`
     const segments = [
       remaining.length > 0 ? `${ansi.bold(`待办 已办 ${String(completed)}/${String(total)}`)}${todoSummary === '' ? '' : ` · ${todoSummary}`}` : undefined,
       liveJobs.length > 0 ? `${ansi.bold(`任务 ${String(liveJobs.length)}`)} · ${liveJobs.slice(0, 2).map(jobRenderer).join(' · ')}` : undefined,
@@ -1118,7 +1223,7 @@ function renderActivity(state: TuiViewState, expanded: boolean): string[] {
     // Pull the todo, job, and workflow summaries into one strip, padded above
     // so it is not glued to the transcript.
     if (segments !== '') lines.push('', segments)
-    if (goal !== undefined) lines.push(`${ansi.bold(`目标 · ${goal.phase}`)} · ${ansi.cyan(oneLine(goal.objective))}`)
+    if (goal !== undefined) lines.push(`${ansi.bold(`目标 · ${goal.phase}`)} · ${palette.accent(oneLine(goal.objective))}`)
     if (queueSummary !== '' && state.queueSize > 0) lines.push(ansi.dim(`队列 ${String(state.queueSize)} · ${queueSummary}`))
   }
   return lines
@@ -1140,11 +1245,12 @@ function renderStatus(state: TuiViewState, width: number): string[] {
     ? undefined
     : status.plan.pending
       ? ansi.yellow(`计划${status.plan.active ? '关闭' : '开启'} · 切换中`)
-      : status.plan.active ? ansi.cyan('计划') : undefined
+      : status.plan.active ? palette.accent('计划') : undefined
   const contextWindow = state.modelContextWindow ?? status.contextWindow
   return balanceSegments([
     phaseLabel,
     state.agentPreset === undefined ? undefined : ansi.bold(state.agentPreset),
+    state.subagentDepth > 0 ? ansi.magenta(`子代理${state.subagentDepth > 1 ? ` ${String(state.subagentDepth)}` : ''} · /back 返回`) : undefined,
     state.model === undefined ? undefined : ansi.dim(shorten(state.model, 36)),
     state.reasoningEffort,
     state.cwd === undefined ? undefined : ansi.dim(shorten(state.cwd, Math.max(18, Math.floor(width / 3)))),
@@ -1154,7 +1260,7 @@ function renderStatus(state: TuiViewState, width: number): string[] {
     contextWindow === undefined ? undefined : formatCompact(contextWindow),
     state.queueSize > 0 ? `队列 ${String(state.queueSize)}` : undefined,
     liveJobCount > 0 ? `任务 ${String(liveJobCount)}` : undefined,
-    status.permission === undefined ? undefined : ansi.cyan(shorten(status.permission, 18)),
+    status.permission === undefined ? undefined : palette.accent(shorten(status.permission, 18)),
     plan,
   ].filter(value => value !== undefined), width)
 }

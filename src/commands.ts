@@ -112,6 +112,7 @@ export function helpLines(): string[] {
     ...TUI_COMMANDS.filter(item => item.forwarded === true).map(line),
     'Ctrl+Shift+E  展开最近的折叠行（上下文/skill 目录、工具详情等）；再按展开更早的，全开后按一下重新全部折叠',
     'Ctrl+T        展开/折叠 todo 清单（非折叠时显示进度和当前正在执行的项）',
+    'Ctrl+N/P      输入框历史/光标、命令补全与选择列表上下移动',
     '其他 /command  交给 Harness 命令或 skill',
   ]
 }
