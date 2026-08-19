@@ -33,6 +33,7 @@ import {
 import {
   compactJson, formatBytes, formatCount, oneLine, prettyJson,
 } from './format.ts'
+import { sanitizeTerminalText } from './terminal-controls.ts'
 
 type Listener = () => void
 
@@ -102,6 +103,12 @@ export interface TuiHostExtensions {
 type TuiTarget =
   | { kind: 'session'; summary: SessionSummary }
   | { kind: 'subagent'; address: SubagentAddress; cwd?: string }
+
+/** Terminal-only side effects kept outside the Host API and durable session state. */
+export interface TuiControllerOptions {
+  /** Apply a user-requested terminal window/tab title through the renderer. */
+  setTerminalTitle?: (title: string) => void
+}
 
 function failure<T>(response: RpcResponse<T>): Error | undefined {
   return response.result.ok
@@ -273,6 +280,7 @@ export class TuiController {
   constructor(
     private readonly api: IApiClient,
     private readonly extensions: TuiHostExtensions = {},
+    private readonly options: TuiControllerOptions = {},
   ) {}
 
   /** Stable terminal-view snapshot getter. */
@@ -412,6 +420,7 @@ export class TuiController {
       phase: 'ready',
       sessionId: current.sessionId,
       title: current.title,
+      lastTurnEnd: current.lastTurnEnd,
       agentPreset: current.agentPreset,
       cwd: current.cwd,
       model: current.model,
@@ -1916,6 +1925,13 @@ export class TuiController {
     this.setNotice(`会话已重命名为 ${result.title}`)
   }
 
+  private commandTerminalTitle(title: string): void {
+    const normalized = sanitizeTerminalText(unquoteWhole(title))
+    if (normalized === '') throw new Error('用法：/title <title>')
+    this.options.setTerminalTitle?.(normalized)
+    this.setNotice(`终端标题已设置为 ${normalized}`)
+  }
+
   private async commandFork(input: string): Promise<void> {
     const atSeq = input === '' ? undefined : Number(input)
     if (atSeq !== undefined && (!Number.isSafeInteger(atSeq) || atSeq < 0)) throw new Error('用法：/fork [event-seq]')
@@ -1939,6 +1955,7 @@ export class TuiController {
     '/new': rest => this.commandNew(rest),
     '/resume': rest => this.commandResume(rest),
     '/rename': rest => this.commandRename(rest),
+    '/title': rest => { this.commandTerminalTitle(rest) },
     '/fork': rest => this.commandFork(rest),
     '/older': () => this.commandOlder(),
     '/models': () => this.commandModels(),
