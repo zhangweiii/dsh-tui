@@ -784,6 +784,112 @@ describe('pi-tui terminal application', () => {
     application.stop()
   })
 
+  it('filters any picker by typing, like the provider search picker', async () => {
+    const terminal = new TestTerminal(100, 16)
+    const controller = new TestController({
+      picker: {
+        kind: 'model', title: '选择模型', current: 'deepseek/reasoner',
+        items: [
+          { value: 'deepseek/reasoner', label: 'DeepSeek Reasoner · DeepSeek' },
+          { value: 'deepseek/chat', label: 'DeepSeek Chat · DeepSeek' },
+          { value: 'openai/gpt-4', label: 'GPT-4 · OpenAI' },
+        ],
+      },
+    })
+    const application = new TerminalApplication(controller.asController(), { continueLatest: false }, { terminal })
+    application.start()
+    await settle(terminal)
+
+    // Opening highlights the current model, so Enter alone confirms it.
+    expect(terminal.viewport()).toContain('DeepSeek Reasoner')
+    expect(terminal.viewport()).toContain('GPT-4')
+    terminal.send('\r')
+    await settle(terminal)
+    expect(controller.pickerValues).toEqual(['deepseek/reasoner'])
+
+    // Reopen and filter by provider name: only OpenAI's model stays.
+    controller.publish({ picker: undefined })
+    controller.publish({
+      picker: {
+        kind: 'model', title: '选择模型', current: 'deepseek/reasoner',
+        items: [
+          { value: 'deepseek/reasoner', label: 'DeepSeek Reasoner · DeepSeek' },
+          { value: 'deepseek/chat', label: 'DeepSeek Chat · DeepSeek' },
+          { value: 'openai/gpt-4', label: 'GPT-4 · OpenAI' },
+        ],
+      },
+    })
+    await settle(terminal)
+    terminal.send('openai')
+    await settle(terminal)
+    expect(terminal.viewport()).toContain('GPT-4')
+    expect(terminal.viewport()).not.toContain('DeepSeek')
+    terminal.send('\r')
+    await settle(terminal)
+    expect(controller.pickerValues).toEqual(['deepseek/reasoner', 'openai/gpt-4'])
+    application.stop()
+  })
+
+  it('highlights the current value when a picker opens and confirms it on Enter', async () => {
+    const terminal = new TestTerminal(100, 16)
+    const controller = new TestController({
+      picker: {
+        kind: 'session', title: '选择会话', current: 'mid',
+        items: [
+          { value: 'first', label: '第一个会话 · 空闲', description: '/work/a' },
+          { value: 'mid', label: '中间会话 · 空闲', description: '/work/b' },
+          { value: 'last', label: '最后会话 · 执行中', description: '/work/c' },
+        ],
+      },
+    })
+    const application = new TerminalApplication(controller.asController(), { continueLatest: false }, { terminal })
+    application.start()
+    await settle(terminal)
+    // Enter with no navigation confirms the highlighted current session.
+    terminal.send('\r')
+    await settle(terminal)
+    expect(controller.pickerValues).toEqual(['mid'])
+    application.stop()
+  })
+
+  it('resets the search filter when a picker reopens with the same items', async () => {
+    const terminal = new TestTerminal(100, 16)
+    const controller = new TestController({
+      picker: {
+        kind: 'model', title: '选择模型', current: undefined,
+        items: [
+          { value: 'a/one', label: '模型 A · X' },
+          { value: 'b/two', label: '模型 B · Y' },
+        ],
+      },
+    })
+    const application = new TerminalApplication(controller.asController(), { continueLatest: false }, { terminal })
+    application.start()
+    await settle(terminal)
+
+    // A query matching nothing shows the kind-specific empty state.
+    terminal.send('zzz')
+    await settle(terminal)
+    expect(terminal.viewport()).toContain('没有匹配的模型')
+    expect(terminal.viewport()).not.toContain('模型 A')
+
+    // Closing and reopening the same picker starts from an unfiltered list.
+    controller.publish({ picker: undefined })
+    controller.publish({
+      picker: {
+        kind: 'model', title: '选择模型', current: undefined,
+        items: [
+          { value: 'a/one', label: '模型 A · X' },
+          { value: 'b/two', label: '模型 B · Y' },
+        ],
+      },
+    })
+    await settle(terminal)
+    expect(terminal.viewport()).toContain('模型 A')
+    expect(terminal.viewport()).toContain('模型 B')
+    application.stop()
+  })
+
   it('moves the provider wizard protocol menu with Ctrl+N/P', async () => {
     const terminal = new TestTerminal(100, 16)
     const wizard = {

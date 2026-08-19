@@ -634,11 +634,34 @@ interface QuestionReviewActions {
   cancel(): void
 }
 
-class ProviderSearchPicker implements Component, Focusable {
+/** Empty-state wording for each picker kind, e.g. `没有匹配的模型`. */
+const PICKER_EMPTY_LABEL: Partial<Record<TuiPicker['kind'], string>> = {
+  directory: '没有匹配的目录',
+  effort: '没有匹配的思考级别',
+  model: '没有匹配的模型',
+  permission: '没有匹配的权限模式',
+  preset: '没有匹配的 preset',
+  provider: '没有匹配的 provider',
+  'provider-setup': '没有匹配的 provider',
+  session: '没有匹配的会话',
+  settings: '没有匹配的 namespace',
+  subagent: '没有匹配的 subagent',
+}
+
+/**
+ * The single-select picker shared by every terminal command choice: a search
+ * input with a fuzzy-filtered list below it. Typing filters the candidates
+ * (matching label, value and description), Up/Down or Ctrl+N/P moves the
+ * highlight, Enter confirms the highlighted item and Escape cancels. This is
+ * the uniform behavior for model selection, sessions, presets, providers,
+ * settings namespaces, subagents, directory browsing and provider setup alike.
+ */
+class SearchPicker implements Component, Focusable {
   private readonly input = new Input()
   private items: TuiPickerItem[] = []
   private filtered: TuiPickerItem[] = []
   private selectedIndex = 0
+  private kind: TuiPicker['kind'] | undefined
   private signature = ''
   private _focused = false
 
@@ -653,11 +676,29 @@ class ProviderSearchPicker implements Component, Focusable {
     this.input.onEscape = this.cancel
   }
 
+  /**
+   * Refresh for a picker state. The search query and highlight are only reset
+   * when the picker actually changes (kind, title, current value or items), so
+   * unrelated view updates keep the user's filter and caret position.
+   */
   update(picker: TuiPicker): void {
-    const signature = itemsSignature(picker.items)
+    const signature = `${picker.kind}\u0000${picker.title}\u0000${picker.current ?? ''}\u0000${itemsSignature(picker.items)}`
     if (signature === this.signature) return
     this.signature = signature
+    this.kind = picker.kind
     this.items = picker.items
+    // Highlight the applied value (e.g. the current model/session) when the
+    // picker opens, like the old plain list did.
+    const currentIndex = picker.current === undefined ? -1 : picker.items.findIndex(item => item.value === picker.current)
+    this.selectedIndex = Math.max(0, currentIndex)
+    this.input.setValue('')
+    this.filter('')
+  }
+
+  /** Drop the retained picker state so the next picker state rebuilds fresh. */
+  reset(): void {
+    this.signature = ''
+    this.kind = undefined
     this.input.setValue('')
     this.filter('')
   }
@@ -705,7 +746,7 @@ class ProviderSearchPicker implements Component, Focusable {
       ...this.input.render(width),
       '',
       ...(visible.length === 0
-        ? [ansi.dim('  没有匹配的 Provider')]
+        ? [ansi.dim(`  ${this.kind === undefined ? '没有匹配的项' : (PICKER_EMPTY_LABEL[this.kind] ?? '没有匹配的项')}`)]
         : visible.map((item, offset) => {
             const selected = start + offset === this.selectedIndex
             const prefix = selected ? palette.accent('→ ') : '  '
@@ -923,10 +964,8 @@ export class TerminalView {
   private readonly questionPicker: QuestionPicker
   private readonly questionReview: QuestionReview
   private readonly providerWizardPicker: ProviderWizardPicker
-  private readonly providerSearchPicker: ProviderSearchPicker
+  private readonly searchPicker: SearchPicker
   private question: QuestionFlowSnapshot = EMPTY_QUESTION_FLOW
-  private pickerSignature = ''
-  private picker: SelectList | undefined
 
   constructor(tui: TUI, state: TuiViewState, private readonly actions: TerminalViewActions) {
     this.state = state
@@ -939,7 +978,7 @@ export class TerminalView {
       submitValue: (row, text) => this.actions.submitProviderWizardValue(row, text),
       cancel: () => this.actions.cancelProviderWizard(),
     })
-    this.providerSearchPicker = new ProviderSearchPicker(
+    this.searchPicker = new SearchPicker(
       value => this.actions.choosePicker(value),
       () => this.actions.closePicker(),
     )
@@ -991,10 +1030,9 @@ export class TerminalView {
     this.activity.invalidate()
   }
 
-  /** Drop the retained generic picker so the next picker state rebuilds it. */
+  /** Drop the retained search picker so the next picker state rebuilds fresh. */
   private clearPicker(): void {
-    this.pickerSignature = ''
-    this.picker = undefined
+    this.searchPicker.reset()
   }
 
   private updateComposer(): void {
@@ -1060,29 +1098,13 @@ export class TerminalView {
     }
     this.editor.disableSubmit = false
     const picker = this.state.picker
-    if (picker?.kind === 'provider-setup') {
-      this.clearPicker()
-      this.providerSearchPicker.update(picker)
-      this.composer.set([
-        new Text(ansi.magenta(ansi.bold('选择要配置的 Provider')), 1, 0),
-        this.providerSearchPicker,
-      ], this.providerSearchPicker)
-      return
-    }
     if (picker !== undefined) {
-      const signature = `${picker.kind}\u0000${picker.title}\u0000${picker.current ?? ''}\u0000${itemsSignature(picker.items)}`
-      if (signature !== this.pickerSignature) {
-        this.pickerSignature = signature
-        this.picker = new SelectList(picker.items, 8, selectListTheme)
-        this.picker.setSelectedIndex(Math.max(0, picker.items.findIndex(item => item.value === picker.current)))
-        this.picker.onSelect = (item: SelectItem) => { this.actions.choosePicker(item.value) }
-        this.picker.onCancel = () => { this.actions.closePicker() }
-      }
+      this.searchPicker.update(picker)
       this.composer.set([
         new Text(ansi.magenta(ansi.bold(picker.title)), 1, 0),
-        this.picker as SelectList,
-        new Text(ansi.dim('↑/↓ 或 Ctrl+N/P 选择 · Enter 确认 · Esc 取消'), 1, 0),
-      ], this.picker)
+        this.searchPicker,
+        new Text(ansi.dim('输入搜索 · ↑/↓ 或 Ctrl+N/P 选择 · Enter 确认 · Esc 取消'), 1, 0),
+      ], this.searchPicker)
       return
     }
     this.clearPicker()
