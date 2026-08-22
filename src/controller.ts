@@ -661,7 +661,15 @@ export class TuiController {
     return uniquePrefixMatch(items, query, item => item.sessionId, '会话')
   }
 
-  /** Hide blank sessions from pickers; the currently loaded session stays visible for context. */
+  /**
+   * Hide blank sessions from pickers; the currently loaded session stays visible
+   * for context. `blank` is Host-derived in `session.list` (the Host computes it
+   * from its own `sessionListMetadata` projection cache), so the client
+   * deliberately never loads that projection itself: consuming it here would add
+   * a second projection load path (history tail page or mux frames) while the row
+   * already carries everything the list needs, and `lastPromptAt` has no terminal
+   * consumer.
+   */
   private pickerSessions(items: readonly SessionSummary[]): SessionSummary[] {
     return items.filter(item => !item.blank || item.sessionId === this.state.sessionId)
   }
@@ -676,10 +684,17 @@ export class TuiController {
         const status = item.running ? '执行中' : item.blank ? '空白' : '空闲'
         const name = projectedTitle(item.projections?.values ?? {})
           ?? (item.cwd === undefined ? String(item.sessionId) : basename(item.cwd) || String(item.sessionId))
+        const details = [
+          item.cwd ?? '未记录目录',
+          ...(item.agentPreset === undefined ? [] : [`preset ${item.agentPreset}`]),
+          // Read-only lineage marker, matching the /subagents panel vocabulary:
+          // origin never proves resumability, so the marker must not change selections.
+          ...(item.origin === 'subagent' || item.parentSessionId !== undefined ? ['子代理'] : []),
+        ]
         return {
           value: String(item.sessionId),
           label: `${name} · ${status}`,
-          description: item.cwd ?? '未记录目录',
+          description: details.join(' · '),
         }
       }),
     })
@@ -1761,7 +1776,9 @@ export class TuiController {
     // directory, and it survives session switches while process.cwd() does not.
     const absolute = resolve(this.state.cwd ?? process.cwd(), path.value)
     const mediaType = imageMediaType(absolute)
+    this.checkImageIntake(mediaType)
     const bytes = await readFile(absolute)
+    this.checkImageBytes(bytes.length, mediaType)
     const content: PromptContentPart[] = [
       ...(path.rest === '' ? [] : [{ type: 'text' as const, text: unquoteWhole(path.rest) }]),
       { type: 'image', mediaType, data: bytes.toString('base64'), name: basename(absolute) },
@@ -1772,6 +1789,36 @@ export class TuiController {
       ...(timeZone === undefined ? {} : { clientTimeZone: timeZone }),
     }))
     this.setNotice(response.command?.text ?? `已提交图片 ${basename(absolute)}`)
+  }
+
+  /**
+   * Pre-check an admitted image against the host's `imageLimits` projection
+   * before the bytes are read or sent. Key absence means the deployment
+   * composes no attachment service: the host answers for itself.
+   * @param mediaType - declared image media type.
+   */
+  private checkImageIntake(mediaType: ImageMediaType): void {
+    const limits = projectionStatus(this.state.projections).images
+    if (limits === undefined) return
+    if (limits.mediaTypes !== undefined && !limits.mediaTypes.includes(mediaType)) {
+      throw new Error(`宿主不允许 ${mediaType} 图片（允许：${limits.mediaTypes.join('、')}）`)
+    }
+  }
+
+  /**
+   * Byte-level intake check after reading the file (the size is unknowable
+   * before the read). The host enforces pixel and dimension caps after
+   * decode; the terminal keeps its client-side check byte/type-only.
+   * @param byteLength - decoded file size in bytes.
+   * @param mediaType - declared image media type.
+   */
+  private checkImageBytes(byteLength: number, mediaType: ImageMediaType): void {
+    const limits = projectionStatus(this.state.projections).images
+    if (limits === undefined) return
+    const cap = limits.maxBytes ?? limits.maximumBytes
+    if (cap !== undefined && byteLength > cap) {
+      throw new Error(`图片 ${formatBytes(byteLength)} 超过宿主限额 ${formatBytes(cap)}（${mediaType}）`)
+    }
   }
 
   private async commandSaveImage(input: string): Promise<void> {
@@ -1816,9 +1863,18 @@ export class TuiController {
 
   private async commandHost(): Promise<void> {
     const host = value(await this.api.host.describe({}))
+    // The Host advertises the account home so the terminal can show the
+    // Web-style `~` abbreviation for the cwd (only when the host reports a
+    // home; Windows hosts may omit it).
+    const home = host.home
+    const underHome = home !== '' && (
+      host.cwd === home || host.cwd.startsWith(home + '/') || host.cwd.startsWith(home + '\\')
+    )
+    const abbreviated = underHome ? '~' + host.cwd.slice(home.length) : undefined
     this.showOverlay('Host', [
       `版本：${host.version}`,
-      `目录：${host.cwd}`,
+      `当前目录：${abbreviated ?? host.cwd}`,
+      ...(home === '' || abbreviated !== undefined ? [] : [`主目录：${home}`]),
       `已连接会话：${String(host.attachedSessions)}`,
       `原生打开路径：${host.canOpenPath ? '支持' : '不支持'}`,
     ])
@@ -1908,7 +1964,18 @@ export class TuiController {
       lines.push(`会话统计：${formatCount(status.session.turns)} 轮 · ${formatCount(status.session.steps)} 步`)
     }
     if (status.images !== undefined) {
-      lines.push(`图片限制：每条最多 ${formatCount(status.images.maximum)} 张 · 合计 ${formatBytes(status.images.maximumBytes)}`)
+      const images = status.images
+      const limits = [
+        `每条最多 ${formatCount(images.maximum)} 张`,
+        `合计 ${formatBytes(images.maximumBytes)}`,
+        ...(images.maxBytes === undefined ? [] : [`单张 ${formatBytes(images.maxBytes)}`]),
+        ...(images.maxPixels === undefined ? [] : [`单张 ≤ ${formatCount(images.maxPixels)} px`]),
+        ...(images.maxDimension === undefined ? [] : [`长边 ≤ ${formatCount(images.maxDimension)} px`]),
+      ]
+      lines.push(`图片限制：${limits.join(' · ')}`)
+      if (images.mediaTypes !== undefined) {
+        lines.push(`图片类型：${images.mediaTypes.join('、')}`)
+      }
     }
     this.showOverlay('运行状态', lines)
   }

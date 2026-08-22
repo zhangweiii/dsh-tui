@@ -21,7 +21,7 @@ dsh --profile tui --standalone
 
 安装命令会直接从 npm registry 拉取本包（本地检出也可以用 `add .` 安装）。已安装的 `dsh` 命令会用 `dsh-base` 初始化 `tui` profile，并记录本包声明的 `dsh.bundle`；CLI 和内置 profile 模板都不包含 TUI 专用代码。
 
-本包要求宿主已经安装 `dsh 0.1.0-rc.6` 或兼容版本；发布包不会携带第二份 DSH 核心模块。
+本包要求宿主已经安装 `dsh 0.1.1-rc.2` 或兼容版本；发布包不会携带第二份 DSH 核心模块。
 
 该 profile 默认创建一个持久化会话，并将它挂入工作目录对应的 workspace；系统会创建或复用该 workspace 记录，因此 Web 会把这条会话列在同一分组中。默认 Web Host 可达时，两个客户端使用该 Host 的 workspace 注册表与事件流；因此 Web 会实时收到分组变更以及后续每一条会话事件。`--connect` 可选择非默认 Web origin，`--standalone` 则跳过探测并强制使用隔离的同进程 Host。显式连接失败会终止启动；隐式探测失败会回退到本地。远程新会话默认使用 TUI 进程的当前目录，而不是 Web 进程的目录。
 
@@ -29,7 +29,7 @@ HTTP 连接只允许 `localhost`、`*.localhost`、`127.0.0.0/8` 和 `[::1]`；�
 
 恢复带目录记录的根会话时会执行相同的幂等挂载，因此既有 cwd-only 会话也会进入该目录的 workspace；没有目录记录的会话仍保持未分组。`--continue` 选择最近更新的根会话；没有可用会话时会新建。`--resume` 选择一个确切的持久化 id。`--resume` 与 `--continue` 互斥，`--connect` 与 `--standalone` 也互斥。应用要求交互式 TTY。
 
-主输入区由 `@earendil-works/pi-tui` 的 `Editor` 提供完整终端编辑能力：Enter 将消息加入队列，Alt+Enter 对活跃 turn 插话，Shift+Enter 换行，Escape 清空草稿或取消活跃 turn，Backspace/终端 DEL 删除光标前的字符，Up/Down（或 Ctrl+N/Ctrl+P）浏览输入历史、移动光标，Ctrl+C 退出。输入单个 slash token 时，内置 autocomplete 会主动显示匹配命令；Up/Down（或 Ctrl+N/Ctrl+P）选择，Tab 完成。所有终端选择场景——会话、模型、preset、subagent、setting namespace、provider/model、思考级别、权限模式、目录浏览与 provider 配置——都统一使用同一个可搜索选择器：输入即按名称、route 与描述做模糊过滤，Up/Down（或 Ctrl+N/Ctrl+P）移动高亮，Enter 确认选中项，长模型或会话列表无需手动滚动。approval 提示中按 `y` 仅允许本次、按 `n` 拒绝。结构化问题使用独立编辑器，因此不会丢失原消息草稿；带选项的单选问题会渲染成可用 ↑/↓（或 Ctrl+N/Ctrl+P）移动高亮、Enter 确认的菜单（选项只列出一份，无重复的编号列表），直接输入任意字符（或选中末尾的 `✎ 其他 / 自定义…` 项）会打开自由文本输入框，Esc 返回选项菜单。多选与无选项问题仍通过选项编号、逗号分隔的多选编号或自由文本作答。任何问题下 Escape 都会取消整个 question request。答完最后一题后会进入一份「问题 → 你的答案」的确认汇总：↑/↓（或 Ctrl+N/Ctrl+P）浏览，在某一行按 Enter 可重新修改该题，选中最后的 `确认提交全部回答` 按 Enter 才真正发送整批回答。
+主输入区由 `@earendil-works/pi-tui` 的 `Editor` 提供完整终端编辑能力：Enter 将消息加入队列，Alt+Enter 对活跃 turn 插话，Shift+Enter 换行，Escape 清空草稿或取消活跃 turn，Backspace/终端 DEL 删除光标前的字符，Up/Down（或 Ctrl+N/Ctrl+P）浏览输入历史、移动光标，Ctrl+C 退出。输入单个 slash token 时，内置 autocomplete 会主动显示匹配命令；Up/Down（或 Ctrl+N/Ctrl+P）选择，Tab 完成。`@file` mention 使用同一个弹出列表：连接 Web Host 时，行首或空白之后的 `@` 令牌会查询宿主的文件引用索引（以会话 cwd 为边界）并渲染路径候选——选择文件即结束 mention，选择目录则保持补全打开，便于继续输入下一段路径。宿主服务不可用时——standalone 模式、断连或未挂载该服务的 Host——`@` 会静默回退到 pi-tui 的本地路径补全，不弹出错误、不打断输入。所有终端选择场景——会话、模型、preset、subagent、setting namespace、provider/model、思考级别、权限模式、目录浏览与 provider 配置——都统一使用同一个可搜索选择器：输入即按名称、route 与描述做模糊过滤，Up/Down（或 Ctrl+N/Ctrl+P）移动高亮，Enter 确认选中项，长模型或会话列表无需手动滚动。approval 提示中按 `y` 仅允许本次、按 `n` 拒绝。结构化问题使用独立编辑器，因此不会丢失原消息草稿；带选项的单选问题会渲染成可用 ↑/↓（或 Ctrl+N/Ctrl+P）移动高亮、Enter 确认的菜单（选项只列出一份，无重复的编号列表），直接输入任意字符（或选中末尾的 `✎ 其他 / 自定义…` 项）会打开自由文本输入框，Esc 返回选项菜单。多选与无选项问题仍通过选项编号、逗号分隔的多选编号或自由文本作答。任何问题下 Escape 都会取消整个 question request。答完最后一题后会进入一份「问题 → 你的答案」的确认汇总：↑/↓（或 Ctrl+N/Ctrl+P）浏览，在某一行按 Enter 可重新修改该题，选中最后的 `确认提交全部回答` 按 Enter 才真正发送整批回答。
 
 应用使用 `TuiAltScreen`、`VStack` 和 `ScrollView` 构造固定高度布局。备用屏幕、同步差分刷新、鼠标与触控板滚动、滚动条、选区复制和终端模式恢复全部由 pi-tui 管理；本包不实现终端重绘或滚动偏移算法。鼠标滚轮和 PageUp/PageDown 滚动 transcript，Ctrl+Shift+F 搜索，Ctrl+Shift+Up/Down 在用户消息之间跳转，Ctrl+Shift+Home/End 到达开头或末尾。用户离开底部阅读历史时，新流式内容不会强制把视口拉回末尾；回到底部后自动恢复跟随。应用的视觉语言与 pi coding agent 的暗色主题（VS Code Dark+）保持一致：用户消息渲染为整行背景气泡，思考/reasoning 为灰色斜体，标题为柔和的琥珀色，链接与列表符号使用 teal 强调色；围栏代码块（```lang … ```）保留灰色围栏并做逐 token 语法高亮。流式生成的回答在生成过程中就呈现同样的形态，而不是一段无色的原始代码。注入的上下文行（skill 目录、插件上下文、工作区指令、会话召回等）、工具输出、压缩摘要和重试说明都默认折叠成一行标题，像 Web 的 disclosure row 一样，避免长启动上下文和冗长工具输出塞满 transcript；运行中的行保持展开，以便实时输出可见。Ctrl+Shift+E 展开最近折叠的行，反复按会依次展开更早的折叠行，全部展开后下一次按键会把它们重新全部折叠。Ctrl+T 展开或折回输入框上方的 todo/任务 活动栏
 
@@ -42,7 +42,7 @@ TUI 自己持有的命令会打开终端原生面板。其他 slash command 仍�
 | 命令 | 行为 |
 |---|---|
 | `/help`、`/status`、`/close` | 显示命令参考、运行与 projection 状态，或关闭当前面板。 |
-| `/sessions [query]`、`/new [cwd]`、`/resume [id-or-prefix]` | 选择、搜索或创建持久化会话；`/sessions` 以及省略 id 的 `/resume` 会打开选择器。 |
+| `/sessions [query]`、`/new [cwd]`、`/resume [id-or-prefix]` | 选择、搜索或创建持久化会话；`/sessions` 以及省略 id 的 `/resume` 会打开选择器，行内展示工作目录、组合所用的 agent preset，以及 subagent lineage 的只读 `子代理` 标记。 |
 | `/rename <title>`、`/title <title>`、`/fork [event-seq]`、`/older` | 重命名 session、设置终端窗口/标签页标题、分叉，或向前分页读取持久化 history。`/title` 只作用于当前 TUI 进程，不会持久化。 |
 | `/archive [session-id] --yes`、`/export [path] [--descendants]` | 归档 session，或导出日志及其引用的 media。 |
 | `/models`、`/model [provider/model] [effort]` | 从可模糊搜索的选择器中选择模型；显式 route 则直接切换。 |
@@ -72,7 +72,7 @@ TUI 自己持有的命令会打开终端原生面板。其他 slash command 仍�
 | `/cordis`、`/cordis-run <plugin-id> [package-id]` | 查看 dynamic package，或运行/更新 host-only package。 |
 | `/cordis-stop <plugin-id> --yes`、`/cordis-remove <plugin-id> --yes` | 停止 dynamic package，或删除其完整定义。 |
 
-包含空白的路径可以加引号。破坏性命令要求末尾带 `--yes`。导出与图片保存采用仅创建写入，目标文件已存在时拒绝覆盖。`/credential-set` 从指定环境变量读取 secret，因此值不会进入终端命令历史或 transcript。
+包含空白的路径可以加引号。破坏性命令要求末尾带 `--yes`。导出与图片保存采用仅创建写入，目标文件已存在时拒绝覆盖。`/credential-set` 从指定环境变量读取 secret，因此值不会进入终端命令历史或 transcript。图片提交前会对照 Host 的 `imageLimits` projection 预检——允许的图片类型、单张与单条消息的字节上限——在读取字节之前拒绝；`/status` 会列出完整预算（包括由宿主强制执行的像素与长边上限）。goal 要带图时可以直接串联命令：`/goal <objective>` 先创建 goal，紧接着 `/image <path>` 以用户消息提交参考图片；Web composer 中支持图片的 `/goal` 仍由 Host 命令路径承担。会话选择器的行直接来自 Host 计算好的 `session.list` summary：隐藏 blank 会话，每行展示记录的 cwd、组合所用的 agent preset，以及 subagent lineage 的只读 `子代理` 标记；客户端不会自行加载 Host 的 `sessionListMetadata` projection——行内派生的 `blank` 正是该 projection 要提供的信息，第二条 projection 加载路径不会带来额外信息。
 
 共享命令 `/plan` 和 `/compact` 与其他未知 slash command 一样，原样交给 Harness 命令或 skill 路径；它们的持久化生命周期会回到同一个 transcript。`/permission` 由 TUI 本地拦截，打开一个可上下选择的权限模式列表（来自 `permissions` projection），选中后把 `/permission <preset>` 交回 Harness 完成切换。
 

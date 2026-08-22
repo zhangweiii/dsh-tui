@@ -16,8 +16,9 @@ import type {} from '@deepseek-ai/dsh-cmdline'
 import type {} from '@deepseek-ai/dsh-message-feedback'
 import { TuiController } from './controller.ts'
 import { createLocalExtensions } from './extensions.ts'
+import { RemoteFileReferenceClient } from './file-reference.ts'
 import type { Config } from './index.ts'
-import { InProcessApiClient, selectTuiApi } from './remote.ts'
+import { InProcessApiClient, selectTuiApi, type RemoteRpcCarrier } from './remote.ts'
 import { TerminalApplication } from './terminal.ts'
 
 export interface TerminalIo {
@@ -84,9 +85,19 @@ export function apply(ctx: Context, config: Config): void {
           : createLocalExtensions(ctx, { apiProxy, agents, inventory, runner, feedback }),
         { setTerminalTitle: title => { application?.setTitle(title) } },
       )
+      // The Host file-reference index is mounted in the Web bundle only, so
+      // standalone mode keeps pi-tui's local completion path untouched.
+      const fileReferenceOptions = selected.remote
+        ? {
+          fileReferences: new RemoteFileReferenceClient(selected.api as unknown as RemoteRpcCarrier),
+          // Diagnostic-only: the first silent fallback per outage episode.
+          onFileReferenceDegraded: (detail: string) => { internals.stderr.write(`dsh-tui: ${detail}\n`) },
+        }
+        : {}
       application = new TerminalApplication(controller, controllerConfig, {
         terminal: internals.createTerminal(),
         onExit: appExit,
+        ...fileReferenceOptions,
       })
       application.start()
     })().catch((error: unknown) => {

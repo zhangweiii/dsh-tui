@@ -17,7 +17,13 @@ export function ok<T>(value: T): Promise<RpcResponse<T>> {
 }
 
 export function summary(sessionId = SID, overrides: Partial<SessionSummary> = {}): SessionSummary {
-  return { sessionId, updatedAt: 2, running: false, blank: false, cwd: '/work', ...overrides }
+  return {
+    sessionId, updatedAt: 2, running: false, blank: false, cwd: '/work',
+    // The fake deployment composes presets (`sessions.create` answers
+    // `agentPreset: 'standard'`), so the header passthrough mirrors it.
+    agentPreset: 'standard',
+    ...overrides,
+  }
 }
 
 function providerSchema(): unknown {
@@ -215,7 +221,7 @@ export function fakeApi(options: {
       },
     },
     host: {
-      describe: vi.fn(() => ok({ version: 'test', cwd: '/work', attachedSessions: 1, canOpenPath: false })),
+      describe: vi.fn(() => ok({ version: 'test', cwd: '/work', home: '/home/test', attachedSessions: 1, canOpenPath: false })),
       listDirectory: vi.fn(() => ok({
         path: '/work', home: '/home/test', crumbs: [{ name: '/', path: '/', hidden: false }], entries: [], truncated: false,
       })),

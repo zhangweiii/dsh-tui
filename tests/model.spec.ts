@@ -39,6 +39,22 @@ describe('tui view projection', () => {
     expect(applySessionEvent(state, event('assistant/message', 2, {}))).toBe(state)
   })
 
+  it('marks the delivered prefix of a cancelled stream as interrupted from the durable marker', () => {
+    let state = createInitialState()
+    state = applySessionEvent(state, event('assistant/message', 3, {
+      turn: 2,
+      step: 1,
+      interrupted: true,
+      message: {
+        id: 'assistant-interrupted', role: 'assistant', source: { kind: 'model', provider: 'p', model: 'm' },
+        content: [{ type: 'text', text: '被取消的答案前缀' }],
+      },
+    }))
+    expect(state.rows.at(-1)).toMatchObject({
+      kind: 'assistant', text: '被取消的答案前缀', status: 'interrupted',
+    })
+  })
+
   it('updates one tool row from call to result and records todos and turn failures', () => {
     const call = event('tool/call', 0, {
       turn: 1, step: 1, callId: 'call-1', name: 'bash', arguments: '{"command":"pwd"}',
@@ -359,7 +375,14 @@ describe('tui view projection', () => {
       contextBreakdown: { systemTokens: 1000, toolsTokens: 2000, messageTokens: 3000 },
       tokenUsage: { uncachedInputTokens: 10, cacheReadTokens: 20, cacheWriteTokens: 30, outputTokens: 40 },
       sessionStats: { turns: 2, steps: 5 },
-      imageLimits: { maxImagesPerMessage: 4, maxMessageImageBytes: 8_388_608 },
+      imageLimits: {
+        maxImagesPerMessage: 4,
+        maxMessageImageBytes: 8_388_608,
+        maxImageBytes: 1_048_576,
+        maxImagePixels: 4_000_000,
+        maxImageDimension: 2048,
+        mediaTypes: ['image/png', 'image/jpeg'],
+      },
     })).toEqual({
       permission: 'workspace-write',
       plan: { active: false, pending: true },
@@ -367,10 +390,27 @@ describe('tui view projection', () => {
       contextWindow: 100_000,
       contextBreakdown: { system: 1000, tools: 2000, messages: 3000 },
       tokens: { input: 60, output: 40 },
-      cacheHitRate: 33,
+      cacheHitRate: 33.3,
       session: { turns: 2, steps: 5 },
-      images: { maximum: 4, maximumBytes: 8_388_608 },
+      images: {
+        maximum: 4,
+        maximumBytes: 8_388_608,
+        maxBytes: 1_048_576,
+        maxPixels: 4_000_000,
+        maxDimension: 2048,
+        mediaTypes: ['image/png', 'image/jpeg'],
+      },
     })
+  })
+
+  it('keeps one decimal on the 99.x% cache band and drops malformed image mediaTypes', () => {
+    expect(projectionStatus({
+      tokenUsage: { uncachedInputTokens: 4, cacheReadTokens: 1992, cacheWriteTokens: 4, outputTokens: 1 },
+    }).cacheHitRate).toBe(99.6)
+    const images = projectionStatus({
+      imageLimits: { maxImagesPerMessage: 1, maxMessageImageBytes: 10, mediaTypes: ['image/png', 42] },
+    }).images
+    expect(images).toEqual({ maximum: 1, maximumBytes: 10 })
   })
 
   it('folds current-session host status, errors, removal, and ignores unrelated frames', () => {
