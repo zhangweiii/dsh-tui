@@ -19,7 +19,9 @@ dsh --profile tui --connect http://127.0.0.1:8080
 dsh --profile tui --standalone
 ```
 
-The install command pulls the package straight from the npm registry (a local checkout also works with `add .`). The installed `dsh` command initializes the `tui` profile with `dsh-base` and records this package's declared `dsh.bundle`; neither the CLI nor its built-in profile templates contain TUI-specific code.
+The install command pulls the package straight from the npm registry. For a local checkout, run `npm run profile:tui`; it builds first and always installs into the `tui` profile. Do not run `dsh plugin --profile web add .`: both the TUI and Web bundles provide Host runtime rows, so installing this package into the `web` profile creates duplicate loader IDs. Connecting to an existing Web Host does not require installing TUI into the Web profile; run `dsh web` and `dsh --profile tui` separately.
+
+The installed `dsh` command initializes the `tui` profile with `dsh-base` and records this package's declared `dsh.bundle`; neither the CLI nor its built-in profile templates contain TUI-specific code.
 
 The package requires an installed `dsh 0.1.1-rc.2` or compatible host and does not ship a second copy of the DSH core modules.
 

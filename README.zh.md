@@ -19,7 +19,9 @@ dsh --profile tui --connect http://127.0.0.1:8080
 dsh --profile tui --standalone
 ```
 
-安装命令会直接从 npm registry 拉取本包（本地检出也可以用 `add .` 安装）。已安装的 `dsh` 命令会用 `dsh-base` 初始化 `tui` profile，并记录本包声明的 `dsh.bundle`；CLI 和内置 profile 模板都不包含 TUI 专用代码。
+安装命令会直接从 npm registry 拉取本包。本地检出请运行 `npm run profile:tui`，该命令会先构建，再固定安装到 `tui` profile。不要执行 `dsh plugin --profile web add .`：TUI 与 Web 都会提供 Host runtime 条目，把本包安装到 `web` profile 会产生重复 loader ID。连接现有 Web Host 不需要把 TUI 安装到 Web profile，只需分别运行 `dsh web` 与 `dsh --profile tui`。
+
+已安装的 `dsh` 命令会用 `dsh-base` 初始化 `tui` profile，并记录本包声明的 `dsh.bundle`；CLI 和内置 profile 模板都不包含 TUI 专用代码。
 
 本包要求宿主已经安装 `dsh 0.1.1-rc.2` 或兼容版本；发布包不会携带第二份 DSH 核心模块。
 

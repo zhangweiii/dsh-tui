@@ -63,6 +63,7 @@
     "build": "tsdown",
     "check": "npm run typecheck && npm test",
     "check:package": "npm run build && node scripts/check-package.mjs",
+    "profile:tui": "npm run build && dsh plugin --profile tui add .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "prepare": "npm run build",
