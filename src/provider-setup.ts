@@ -5,9 +5,7 @@
  * `providerSetupRows`; everything else is pure draft logic the tests drive
  * without a terminal.
  */
-import {
-  getPath, nodeAtPath, rehydrateSchema,
-} from '@deepseek-ai/dsh-client-schema-form'
+import { getPath, nodeAtPath, rehydrateSchema } from './schema-form.ts'
 import type {
   ConfigurableProviderView, CredentialView, IApiClient,
   SettingsNamespaceView, SettingsPathOpView,

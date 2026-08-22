@@ -463,6 +463,34 @@ describe('regressions pinned by the sweep', () => {
     }
   })
 
+  it('/image pre-checks host image limits before reading and submitting', async () => {
+    const work = await mkdtemp(join(tmpdir(), 'dsh-sweep-image-limit-'))
+    const previousCwd = process.cwd()
+    process.chdir(work)
+    try {
+      await writeFile(join(work, 'pic.gif'), Buffer.from('GIF89a'))
+      await writeFile(join(work, 'big.png'), Buffer.from([137, 80, 78, 71]))
+      const projection = {
+        type: 'session/projection', sessionId: SID, key: 'imageLimits',
+        value: {
+          maxImagesPerMessage: 4, maxMessageImageBytes: 8_388_608,
+          maxImageBytes: 2, mediaTypes: ['image/png', 'image/jpeg'],
+        },
+        seq: 1,
+      } as never
+      const { controller, fake } = await started({ items: [summary(SID, { cwd: work })], mux: projection })
+      await controller.submit('/image pic.gif')
+      expect(controller.getSnapshot().notice).toMatch(/宿主不允许 image\/gif 图片/)
+      await controller.submit('/image big.png')
+      expect(controller.getSnapshot().notice).toMatch(/超过宿主限额/)
+      expect(fake.prompt).not.toHaveBeenCalled()
+      controller.dispose()
+    } finally {
+      process.chdir(previousCwd)
+      await rm(work, { recursive: true, force: true })
+    }
+  })
+
   it('/fork rejects a negative event sequence as usage', async () => {
     const { controller, fake } = await started()
     const fork = fake.api.sessions.fork as ReturnType<typeof vi.fn>

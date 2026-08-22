@@ -6,7 +6,9 @@ import { fileURLToPath } from 'node:url'
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)))
 const manifest = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
-const bundledDependencies = ['@deepseek-ai/dsh-client-schema-form']
+// Deps inlined into the published bundle (tsdown deps.onlyBundle) must never
+// be published as runtime dependencies of the manifest.
+const bundledDependencies = []
 const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm'
 const tarball = `${manifest.name.replace(/^@/, '').replace('/', '-')}-${manifest.version}.tgz`
 

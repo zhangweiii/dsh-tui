@@ -175,10 +175,21 @@ export interface TuiProjectionStatus {
   contextWindow?: number
   contextBreakdown?: { system: number; tools: number; messages: number }
   tokens?: { input: number; output: number }
-  /** Cumulative prompt-cache hit rate, as a percentage between 0 and 100. */
+  /** Cumulative prompt-cache hit rate, as a percentage between 0 and 100, one decimal for 99.x. */
   cacheHitRate?: number
   session?: { turns: number; steps: number }
-  images?: { maximum: number; maximumBytes: number }
+  images?: {
+    maximum: number
+    maximumBytes: number
+    /** Per-image byte cap; absent when the host reports none. */
+    maxBytes?: number
+    /** Per-image pixel cap; host-enforced (the terminal pre-check stays byte/type-only). */
+    maxPixels?: number
+    /** Per-image long-edge cap; host-enforced. */
+    maxDimension?: number
+    /** Media types the host admits; absent when no attachment service is composed. */
+    mediaTypes?: string[]
+  }
 }
 
 /**
@@ -376,6 +387,11 @@ function finiteNumber(record: Record<string, unknown> | undefined, key: string):
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined
 }
 
+function arrayOfStrings(record: Record<string, unknown> | undefined, key: string): string[] | undefined {
+  const value = record?.[key]
+  return Array.isArray(value) && value.every(item => typeof item === 'string') ? value as string[] : undefined
+}
+
 /**
  * Normalize optional projection payloads without coupling the renderer to their Host packages.
  * @param projections - Detached projection values from history or live frames.
@@ -428,7 +444,8 @@ export function projectionStatus(projections: Record<string, unknown>): TuiProje
     const input = uncached + cacheRead + cacheWrite
     result.tokens = { input, output }
     // Cache writes are non-hit input, so the hit rate is cacheRead / total input.
-    if (input > 0) result.cacheHitRate = Math.round(cacheRead / input * 100)
+    // Keep one decimal so 99.x% does not collapse to a rounded 100%.
+    if (input > 0) result.cacheHitRate = Math.round(cacheRead / input * 1000) / 10
   }
 
   const stats = object(projections.sessionStats)
@@ -439,7 +456,18 @@ export function projectionStatus(projections: Record<string, unknown>): TuiProje
   const imageLimits = object(projections.imageLimits)
   const maximum = finiteNumber(imageLimits, 'maxImagesPerMessage')
   const maximumBytes = finiteNumber(imageLimits, 'maxMessageImageBytes')
-  if (maximum !== undefined && maximumBytes !== undefined) result.images = { maximum, maximumBytes }
+  if (maximum !== undefined && maximumBytes !== undefined) {
+    const images: NonNullable<TuiProjectionStatus['images']> = { maximum, maximumBytes }
+    const maxBytes = finiteNumber(imageLimits, 'maxImageBytes')
+    if (maxBytes !== undefined) images.maxBytes = maxBytes
+    const maxPixels = finiteNumber(imageLimits, 'maxImagePixels')
+    if (maxPixels !== undefined) images.maxPixels = maxPixels
+    const maxDimension = finiteNumber(imageLimits, 'maxImageDimension')
+    if (maxDimension !== undefined) images.maxDimension = maxDimension
+    const mediaTypes = arrayOfStrings(imageLimits, 'mediaTypes')
+    if (mediaTypes !== undefined) images.mediaTypes = mediaTypes
+    result.images = images
+  }
   return result
 }
 
@@ -692,9 +720,14 @@ export function applySessionEvent(
       }
       const reasoning = reasoningText(event.data.message.content)
       const text = contentText(event.data.message.content)
+      // The durable interrupted marker (host finalizes the delivered prefix of a
+      // cancelled stream with interrupted: true) marks the row instead of the
+      // turn-boundary inference; only the prefix actually streamed is shown.
+      const settled: Extract<TranscriptStatus, 'completed' | 'failed' | 'interrupted'> =
+        event.data.interrupted === true ? 'interrupted' : 'completed'
       next = settleRetries({
         ...next, partialText: '', partialReasoning: '', partialTool: undefined,
-      }, event.data.turn, 'completed', event.seq)
+      }, event.data.turn, settled, event.seq)
       if (reasoning !== '') {
         next = appendRow(next, { id: `reasoning-${String(event.seq)}`, seq: event.seq, kind: 'reasoning', text: reasoning })
       }
@@ -705,6 +738,7 @@ export function applySessionEvent(
           kind: 'assistant',
           text,
           messageId: event.data.message.id,
+          ...(settled === 'interrupted' ? { status: 'interrupted' as const } : {}),
         })
       }
       return appendDeliverables(next, event.data.turn, event.seq)

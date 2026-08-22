@@ -21,7 +21,7 @@ dsh --profile tui --standalone
 
 The install command pulls the package straight from the npm registry (a local checkout also works with `add .`). The installed `dsh` command initializes the `tui` profile with `dsh-base` and records this package's declared `dsh.bundle`; neither the CLI nor its built-in profile templates contain TUI-specific code.
 
-The package requires an installed `dsh 0.1.0-rc.6` or compatible host and does not ship a second copy of the DSH core modules.
+The package requires an installed `dsh 0.1.1-rc.2` or compatible host and does not ship a second copy of the DSH core modules.
 
 The profile creates a persisted session by default and attaches it to the workspace for its working directory, creating or reusing that workspace record so Web lists the session in the same group. When the default Web Host is reachable, both clients use that Host's workspace registry and event streams; Web therefore receives the grouping mutation and every later session event live. `--connect` selects a non-default Web origin, while `--standalone` skips discovery and forces the isolated in-process Host. An explicit connection failure stops startup; implicit discovery failure falls back locally. A remote new session defaults to the TUI process's current directory rather than the Web process's directory.
 
@@ -72,7 +72,7 @@ Commands owned by the TUI open a terminal-native panel. Other slash commands rem
 | `/cordis`, `/cordis-run <plugin-id> [package-id]` | Inspect dynamic packages or run/update a Host-only package. |
 | `/cordis-stop <plugin-id> --yes`, `/cordis-remove <plugin-id> --yes` | Stop a dynamic package or remove its complete definition. |
 
-Paths containing whitespace can be quoted. Destructive commands require a trailing `--yes`. Export and image-save commands use create-only writes and refuse to overwrite an existing file. `/credential-set` reads the secret from the named environment variable, so the value never enters the terminal's command history or transcript.
+Paths containing whitespace can be quoted. Destructive commands require a trailing `--yes`. Export and image-save commands use create-only writes and refuse to overwrite an existing file. `/credential-set` reads the secret from the named environment variable, so the value never enters the terminal's command history or transcript. Image intake is pre-checked against the Host's `imageLimits` projection — admitted media types, per-image and per-message byte budgets — before any bytes are read, and `/status` lists the complete budget (including the host-enforced pixel and dimension caps). A goal can carry image context by chain commands: `/goal <objective>` authors the goal and `/image <path>` right after submits the references as a user message; the older Web composer's image-capable `/goal` execution stays with the Host command path.
 
 Shared `/plan` and `/compact` commands follow the Harness command or skill path like any other unknown slash command. Their durable lifecycle returns to the same transcript. `/permission` is intercepted by the TUI to open an arrow-navigable list of permission modes (from the `permissions` projection); picking one forwards `/permission <preset>` back to the Harness to perform the switch.
 

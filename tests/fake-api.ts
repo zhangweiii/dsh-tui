@@ -215,7 +215,7 @@ export function fakeApi(options: {
       },
     },
     host: {
-      describe: vi.fn(() => ok({ version: 'test', cwd: '/work', attachedSessions: 1, canOpenPath: false })),
+      describe: vi.fn(() => ok({ version: 'test', cwd: '/work', home: '/home/test', attachedSessions: 1, canOpenPath: false })),
       listDirectory: vi.fn(() => ok({
         path: '/work', home: '/home/test', crumbs: [{ name: '/', path: '/', hidden: false }], entries: [], truncated: false,
       })),

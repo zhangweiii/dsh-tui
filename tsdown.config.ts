@@ -16,7 +16,6 @@ export default defineConfig({
   },
   deps: {
     onlyBundle: [
-      '@deepseek-ai/dsh-client-schema-form',
       '@deepseek-ai/dsh-llm',
       '@deepseek-ai/dsh-timeout',
     ],

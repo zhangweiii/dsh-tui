@@ -21,7 +21,7 @@ dsh --profile tui --standalone
 
 安装命令会直接从 npm registry 拉取本包（本地检出也可以用 `add .` 安装）。已安装的 `dsh` 命令会用 `dsh-base` 初始化 `tui` profile，并记录本包声明的 `dsh.bundle`；CLI 和内置 profile 模板都不包含 TUI 专用代码。
 
-本包要求宿主已经安装 `dsh 0.1.0-rc.6` 或兼容版本；发布包不会携带第二份 DSH 核心模块。
+本包要求宿主已经安装 `dsh 0.1.1-rc.2` 或兼容版本；发布包不会携带第二份 DSH 核心模块。
 
 该 profile 默认创建一个持久化会话，并将它挂入工作目录对应的 workspace；系统会创建或复用该 workspace 记录，因此 Web 会把这条会话列在同一分组中。默认 Web Host 可达时，两个客户端使用该 Host 的 workspace 注册表与事件流；因此 Web 会实时收到分组变更以及后续每一条会话事件。`--connect` 可选择非默认 Web origin，`--standalone` 则跳过探测并强制使用隔离的同进程 Host。显式连接失败会终止启动；隐式探测失败会回退到本地。远程新会话默认使用 TUI 进程的当前目录，而不是 Web 进程的目录。
 
@@ -72,7 +72,7 @@ TUI 自己持有的命令会打开终端原生面板。其他 slash command 仍�
 | `/cordis`、`/cordis-run <plugin-id> [package-id]` | 查看 dynamic package，或运行/更新 host-only package。 |
 | `/cordis-stop <plugin-id> --yes`、`/cordis-remove <plugin-id> --yes` | 停止 dynamic package，或删除其完整定义。 |
 
-包含空白的路径可以加引号。破坏性命令要求末尾带 `--yes`。导出与图片保存采用仅创建写入，目标文件已存在时拒绝覆盖。`/credential-set` 从指定环境变量读取 secret，因此值不会进入终端命令历史或 transcript。
+包含空白的路径可以加引号。破坏性命令要求末尾带 `--yes`。导出与图片保存采用仅创建写入，目标文件已存在时拒绝覆盖。`/credential-set` 从指定环境变量读取 secret，因此值不会进入终端命令历史或 transcript。图片提交前会对照 Host 的 `imageLimits` projection 预检——允许的图片类型、单张与单条消息的字节上限——在读取字节之前拒绝；`/status` 会列出完整预算（包括由宿主强制执行的像素与长边上限）。goal 要带图时可以直接串联命令：`/goal <objective>` 先创建 goal，紧接着 `/image <path>` 以用户消息提交参考图片；Web composer 中支持图片的 `/goal` 仍由 Host 命令路径承担。
 
 共享命令 `/plan` 和 `/compact` 与其他未知 slash command 一样，原样交给 Harness 命令或 skill 路径；它们的持久化生命周期会回到同一个 transcript。`/permission` 由 TUI 本地拦截，打开一个可上下选择的权限模式列表（来自 `permissions` projection），选中后把 `/permission <preset>` 交回 Harness 完成切换。
 
