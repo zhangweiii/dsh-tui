@@ -7,6 +7,7 @@ import type {
 import type {
   RequestPayload, ResponseValue, RpcMethodMap,
 } from '@deepseek-ai/dsh-host-apiproxy/api/rpc-map'
+import type { RpcResult } from '@deepseek-ai/dsh-host-apiproxy/api'
 import type { TuiStartupValues } from './startup.ts'
 
 /** Default loopback origin used by the shipped Web profile. */
@@ -28,6 +29,17 @@ type SocketItem<F> =
 
 function mintRpcId(): RpcId {
   return crypto.randomUUID() as RpcId
+}
+
+/** Generic unary RPC face over the shared `/api` Connection channel. */
+export interface RemoteRpcCarrier {
+  /**
+   * Call one channel-relative endpoint such as a typert Remote
+   * (`namespace/method`) with its named wire args. Resolves with the RPC
+   * result envelope; rejects only on transport or envelope failures, and a
+   * result error branch is returned rather than thrown.
+   */
+  callRemote(endpoint: string, args: Readonly<Record<string, unknown>>, signal?: AbortSignal): Promise<RpcResult<unknown>>
 }
 
 function loopbackHostname(hostname: string): boolean {
@@ -79,11 +91,33 @@ function serverRequest(value: unknown): ServerRequest {
 }
 
 /** Shared payload-direct method table without importing DSH runtime code. */
-abstract class ApiClientBase implements IApiClient {
+export abstract class ApiClientBase implements IApiClient, RemoteRpcCarrier {
   protected abstract callRaw(method: string, payload: unknown, signal?: AbortSignal): Promise<unknown>
   protected abstract respondRaw(message: ClientResponse, signal?: AbortSignal): Promise<unknown>
   protected abstract openMux(payload: {}, signal: AbortSignal, onOpen?: () => void): AsyncIterable<RpcRequest<MuxFrame>>
   protected abstract openHost(payload: {}, signal: AbortSignal, onOpen?: () => void): AsyncIterable<RpcRequest<HostFrame>>
+
+  /**
+   * Generic unary call on the shared `/api` Connection RPC channel: the same
+   * wire shape the browser uses for typert Remote endpoints (`{ args }`
+   * payload, `server-response` envelope). The in-process client has no such
+   * endpoints and rejects, which callers treat as "service absent".
+   */
+  async callRemote(
+    endpoint: string,
+    args: Readonly<Record<string, unknown>>,
+    signal?: AbortSignal,
+  ): Promise<RpcResult<unknown>> {
+    const response = await this.callRaw(endpoint, { args }, signal) as { result?: unknown } | null
+    if (response === null || typeof response !== 'object' || !('result' in response)) {
+      throw new Error(`${endpoint}: invalid remote envelope`)
+    }
+    const result = (response as { result: unknown }).result
+    if (typeof result !== 'object' || result === null || !('ok' in result)) {
+      throw new Error(`${endpoint}: invalid remote result envelope`)
+    }
+    return result as RpcResult<unknown>
+  }
 
   private call<K extends keyof RpcMethodMap>(
     method: K,

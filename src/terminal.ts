@@ -7,6 +7,7 @@ import {
   type Terminal,
 } from '@earendil-works/pi-tui'
 import { slashCommands } from './commands.ts'
+import { FileReferenceAutocompleteProvider, type FileReferenceClient } from './file-reference.ts'
 import type { TuiController } from './controller.ts'
 import type { Config } from './index.ts'
 import type { PendingQuestion, TuiViewState } from './model.ts'
@@ -23,6 +24,14 @@ export interface TerminalApplicationOptions {
   title?: string
   /** Capability hints used to select the terminal notification protocol. */
   notificationEnvironment?: TerminalNotificationEnvironment
+  /**
+   * Host file-reference index for `@` mentions in the composer. Present only
+   * when connected to a remote Web Host; standalone keeps pi-tui's local
+   * behavior and never issues a host query.
+   */
+  fileReferences?: FileReferenceClient
+  /** Diagnostic sink when `@` completion silently falls back; never rendered. */
+  onFileReferenceDegraded?: (detail: string) => void
 }
 
 /** Mutable state machine behind one pending structured-question batch. */
@@ -130,7 +139,13 @@ export class TerminalApplication {
       submitProviderWizardValue: (row, text) => { this.controller.wizardValue(row, text) },
       cancelProviderWizard: () => { this.controller.cancelProviderWizard() },
     })
-    this.view.editor.setAutocompleteProvider(new CombinedAutocompleteProvider(slashCommands(), config.cwd ?? process.cwd()))
+    const autocompleteDelegate = new CombinedAutocompleteProvider(slashCommands(), config.cwd ?? process.cwd())
+    this.view.editor.setAutocompleteProvider(options.fileReferences === undefined
+      ? autocompleteDelegate
+      : new FileReferenceAutocompleteProvider(autocompleteDelegate, options.fileReferences, {
+        currentSessionId: () => this.state.sessionId,
+        onDegraded: options.onFileReferenceDegraded,
+      }))
     this.view.editor.onSubmit = text => { void this.submit(text, 'queue') }
     this.view.questionEditor.onSubmit = text => { void this.submitQuestion(text) }
     this.tui.setLayoutRoot(this.view.layout)
