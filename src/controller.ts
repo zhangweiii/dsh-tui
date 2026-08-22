@@ -661,7 +661,15 @@ export class TuiController {
     return uniquePrefixMatch(items, query, item => item.sessionId, '会话')
   }
 
-  /** Hide blank sessions from pickers; the currently loaded session stays visible for context. */
+  /**
+   * Hide blank sessions from pickers; the currently loaded session stays visible
+   * for context. `blank` is Host-derived in `session.list` (the Host computes it
+   * from its own `sessionListMetadata` projection cache), so the client
+   * deliberately never loads that projection itself: consuming it here would add
+   * a second projection load path (history tail page or mux frames) while the row
+   * already carries everything the list needs, and `lastPromptAt` has no terminal
+   * consumer.
+   */
   private pickerSessions(items: readonly SessionSummary[]): SessionSummary[] {
     return items.filter(item => !item.blank || item.sessionId === this.state.sessionId)
   }
@@ -676,10 +684,17 @@ export class TuiController {
         const status = item.running ? '执行中' : item.blank ? '空白' : '空闲'
         const name = projectedTitle(item.projections?.values ?? {})
           ?? (item.cwd === undefined ? String(item.sessionId) : basename(item.cwd) || String(item.sessionId))
+        const details = [
+          item.cwd ?? '未记录目录',
+          ...(item.agentPreset === undefined ? [] : [`preset ${item.agentPreset}`]),
+          // Read-only lineage marker, matching the /subagents panel vocabulary:
+          // origin never proves resumability, so the marker must not change selections.
+          ...(item.origin === 'subagent' || item.parentSessionId !== undefined ? ['子代理'] : []),
+        ]
         return {
           value: String(item.sessionId),
           label: `${name} · ${status}`,
-          description: item.cwd ?? '未记录目录',
+          description: details.join(' · '),
         }
       }),
     })

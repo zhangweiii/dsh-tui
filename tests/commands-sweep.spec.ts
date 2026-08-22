@@ -310,6 +310,10 @@ describe('slash-command sweep', () => {
     // history and would wipe the queue/jobs frames asserted above.
     await controller.submit('/sessions')
     expect(state().picker?.kind).toBe('session')
+    // Rows render the Host-computed summary: cwd, composition preset, and a
+    // read-only 子代理 marker for subagent lineage (see controller.spec).
+    expect(state().picker?.items.map(item => item.value)).toEqual([SID])
+    expect(state().picker?.items[0]?.description).toBe('/work · preset standard')
     controller.closePicker()
     await controller.submit('/subagents')
     expect(state().picker?.kind).toBe('subagent')

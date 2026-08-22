@@ -446,6 +446,40 @@ describe('TuiController', () => {
     controller.dispose()
   })
 
+  it('annotates session rows with the composition preset and subagent lineage', async () => {
+    const SUB = SessionId('session-subagent')
+    const UNRECORDED = SessionId('session-unrecorded')
+    const fake = fakeApi({
+      items: [
+        summary(SID),
+        summary(SUB, { updatedAt: 1, origin: 'subagent', parentSessionId: SID }),
+        // Lineage via parentSessionId alone must also get the marker, and an
+        // unrecorded cwd falls back to the placeholder.
+        summary(UNRECORDED, { updatedAt: 0, cwd: undefined, parentSessionId: SID }),
+      ],
+    })
+    const controller = new TuiController(fake.api)
+    await controller.start({ continueLatest: false, resume: SID })
+
+    await controller.submit('/sessions')
+    expect(controller.getSnapshot().picker?.items.map(item => item.description)).toEqual([
+      '/work · preset standard',
+      '/work · preset standard · 子代理',
+      '未记录目录 · preset standard · 子代理',
+    ])
+    // The marker is read-only: resuming a subagent row still attaches nothing as
+    // a workspace root (see the "does not attach" case above), and the picker
+    // simply switches to it.
+    controller.closePicker()
+    fake.workspaceCreate.mockClear()
+    fake.create.mockClear()
+    await controller.submit(`/resume ${SUB}`)
+    expect(fake.workspaceCreate).not.toHaveBeenCalled()
+    expect(fake.create).not.toHaveBeenCalled()
+    expect(controller.getSnapshot()).toMatchObject({ sessionId: SUB, picker: undefined })
+    controller.dispose()
+  })
+
   it('mutates queue items by stable id and requires confirmation before removal', async () => {
     const fake = fakeApi({
       items: [summary()],

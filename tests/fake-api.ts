@@ -17,7 +17,13 @@ export function ok<T>(value: T): Promise<RpcResponse<T>> {
 }
 
 export function summary(sessionId = SID, overrides: Partial<SessionSummary> = {}): SessionSummary {
-  return { sessionId, updatedAt: 2, running: false, blank: false, cwd: '/work', ...overrides }
+  return {
+    sessionId, updatedAt: 2, running: false, blank: false, cwd: '/work',
+    // The fake deployment composes presets (`sessions.create` answers
+    // `agentPreset: 'standard'`), so the header passthrough mirrors it.
+    agentPreset: 'standard',
+    ...overrides,
+  }
 }
 
 function providerSchema(): unknown {

@@ -42,7 +42,7 @@ TUI 自己持有的命令会打开终端原生面板。其他 slash command 仍�
 | 命令 | 行为 |
 |---|---|
 | `/help`、`/status`、`/close` | 显示命令参考、运行与 projection 状态，或关闭当前面板。 |
-| `/sessions [query]`、`/new [cwd]`、`/resume [id-or-prefix]` | 选择、搜索或创建持久化会话；`/sessions` 以及省略 id 的 `/resume` 会打开选择器。 |
+| `/sessions [query]`、`/new [cwd]`、`/resume [id-or-prefix]` | 选择、搜索或创建持久化会话；`/sessions` 以及省略 id 的 `/resume` 会打开选择器，行内展示工作目录、组合所用的 agent preset，以及 subagent lineage 的只读 `子代理` 标记。 |
 | `/rename <title>`、`/title <title>`、`/fork [event-seq]`、`/older` | 重命名 session、设置终端窗口/标签页标题、分叉，或向前分页读取持久化 history。`/title` 只作用于当前 TUI 进程，不会持久化。 |
 | `/archive [session-id] --yes`、`/export [path] [--descendants]` | 归档 session，或导出日志及其引用的 media。 |
 | `/models`、`/model [provider/model] [effort]` | 从可模糊搜索的选择器中选择模型；显式 route 则直接切换。 |
@@ -72,7 +72,7 @@ TUI 自己持有的命令会打开终端原生面板。其他 slash command 仍�
 | `/cordis`、`/cordis-run <plugin-id> [package-id]` | 查看 dynamic package，或运行/更新 host-only package。 |
 | `/cordis-stop <plugin-id> --yes`、`/cordis-remove <plugin-id> --yes` | 停止 dynamic package，或删除其完整定义。 |
 
-包含空白的路径可以加引号。破坏性命令要求末尾带 `--yes`。导出与图片保存采用仅创建写入，目标文件已存在时拒绝覆盖。`/credential-set` 从指定环境变量读取 secret，因此值不会进入终端命令历史或 transcript。图片提交前会对照 Host 的 `imageLimits` projection 预检——允许的图片类型、单张与单条消息的字节上限——在读取字节之前拒绝；`/status` 会列出完整预算（包括由宿主强制执行的像素与长边上限）。goal 要带图时可以直接串联命令：`/goal <objective>` 先创建 goal，紧接着 `/image <path>` 以用户消息提交参考图片；Web composer 中支持图片的 `/goal` 仍由 Host 命令路径承担。
+包含空白的路径可以加引号。破坏性命令要求末尾带 `--yes`。导出与图片保存采用仅创建写入，目标文件已存在时拒绝覆盖。`/credential-set` 从指定环境变量读取 secret，因此值不会进入终端命令历史或 transcript。图片提交前会对照 Host 的 `imageLimits` projection 预检——允许的图片类型、单张与单条消息的字节上限——在读取字节之前拒绝；`/status` 会列出完整预算（包括由宿主强制执行的像素与长边上限）。goal 要带图时可以直接串联命令：`/goal <objective>` 先创建 goal，紧接着 `/image <path>` 以用户消息提交参考图片；Web composer 中支持图片的 `/goal` 仍由 Host 命令路径承担。会话选择器的行直接来自 Host 计算好的 `session.list` summary：隐藏 blank 会话，每行展示记录的 cwd、组合所用的 agent preset，以及 subagent lineage 的只读 `子代理` 标记；客户端不会自行加载 Host 的 `sessionListMetadata` projection——行内派生的 `blank` 正是该 projection 要提供的信息，第二条 projection 加载路径不会带来额外信息。
 
 共享命令 `/plan` 和 `/compact` 与其他未知 slash command 一样，原样交给 Harness 命令或 skill 路径；它们的持久化生命周期会回到同一个 transcript。`/permission` 由 TUI 本地拦截，打开一个可上下选择的权限模式列表（来自 `permissions` projection），选中后把 `/permission <preset>` 交回 Harness 完成切换。
 
