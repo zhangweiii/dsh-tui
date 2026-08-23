@@ -4,11 +4,11 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
-import { RpcId, type MuxFrame } from '@deepseek-ai/dsh-host-apiproxy'
+import { RpcId, type MuxFrame, type RpcResponse, type SessionSummary } from '@deepseek-ai/dsh-host-apiproxy'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import { LOCAL_COMMANDS } from '../src/commands.ts'
 import { TuiController } from '../src/controller.ts'
-import { CHILD, fakeApi, SID, summary } from './fake-api.ts'
+import { CHILD, fakeApi, ok, SID, summary } from './fake-api.ts'
 
 describe('TuiController', () => {
   it('creates a session, stitches stream frames over history, sends, cancels, and answers approvals', async () => {
@@ -41,6 +41,103 @@ describe('TuiController', () => {
       result: { ok: true, value: { sessionId: SID, approvalId: 'approval-1', outcome: 'allowed-once' } },
     })
     controller.dispose()
+  })
+
+  it('reconciles a running session after the host status edge was missed', async () => {
+    const fake = fakeApi({
+      listItemsByCall: [
+        [summary(SID, { running: true })],
+        [summary(SID, { running: false })],
+      ],
+      hostFrames: [],
+    })
+    const controller = new TuiController(fake.api)
+    await controller.start({ continueLatest: false, resume: SID })
+
+    try {
+      await vi.waitFor(() => { expect(controller.getSnapshot().running).toBe(false) })
+      expect(vi.mocked(fake.api.sessions.list).mock.calls.length).toBeGreaterThanOrEqual(2)
+    } finally {
+      controller.dispose()
+    }
+  })
+
+  it('reconciles running again when the host event stream reopens', async () => {
+    let reopen: (() => void) | undefined
+    const reopened = new Promise<void>((resolve) => { reopen = resolve })
+    let running = true
+    const fake = fakeApi({ items: [summary(SID, { running: true })], hostFrames: [] })
+    vi.mocked(fake.api.sessions.list).mockImplementation(() => ok({ items: [summary(SID, { running })] }))
+    Object.assign(fake.api.events, {
+      host: async function *(_payload: unknown, signal: AbortSignal, onOpen?: () => void) {
+        if (signal.aborted) return
+        onOpen?.()
+        await reopened
+        if (signal.aborted) return
+        onOpen?.()
+        await new Promise<void>((resolve) => {
+          if (signal.aborted) return resolve()
+          signal.addEventListener('abort', () => { resolve() }, { once: true })
+        })
+      },
+    })
+    const controller = new TuiController(fake.api)
+    await controller.start({ continueLatest: false, resume: SID })
+
+    try {
+      await vi.waitFor(() => { expect(controller.getSnapshot().running).toBe(true) })
+      running = false
+      reopen?.()
+      await vi.waitFor(() => { expect(controller.getSnapshot().running).toBe(false) })
+    } finally {
+      controller.dispose()
+    }
+  })
+
+  it('does not let an old reconciliation snapshot overwrite a newer status edge', async () => {
+    let openHost: (() => void) | undefined
+    let emitRunning: (() => void) | undefined
+    let resolveStale: (() => void) | undefined
+    const opened = new Promise<void>((resolve) => { openHost = resolve })
+    const emitted = new Promise<void>((resolve) => { emitRunning = resolve })
+    const stale = new Promise<RpcResponse<{ items: SessionSummary[] }>>((resolve) => {
+      resolveStale = () => { resolve({ rpcId: RpcId('stale-list'), result: { ok: true, value: { items: [summary(SID, { running: false })] } } }) }
+    })
+    const fake = fakeApi({ items: [summary(SID, { running: false })], hostFrames: [] })
+    Object.assign(fake.api.events, {
+      host: async function *(_payload: unknown, signal: AbortSignal, onOpen?: () => void) {
+        await opened
+        if (signal.aborted) return
+        onOpen?.()
+        await emitted
+        if (signal.aborted) return
+        yield {
+          rpcId: RpcId('new-status'),
+          payload: { type: 'host/session-status' as const, sessionId: SID, running: true },
+        }
+        await new Promise<void>((resolve) => {
+          if (signal.aborted) return resolve()
+          signal.addEventListener('abort', () => { resolve() }, { once: true })
+        })
+      },
+    })
+    const controller = new TuiController(fake.api)
+    await controller.start({ continueLatest: false, resume: SID })
+
+    try {
+      await vi.waitFor(() => { expect(vi.mocked(fake.api.sessions.list).mock.calls.length).toBeGreaterThanOrEqual(2) })
+      await new Promise(resolve => setTimeout(resolve, 0))
+      vi.mocked(fake.api.sessions.list).mockImplementationOnce(() => stale)
+      openHost?.()
+      await vi.waitFor(() => { expect(vi.mocked(fake.api.sessions.list).mock.calls.length).toBeGreaterThanOrEqual(3) })
+      emitRunning?.()
+      await vi.waitFor(() => { expect(controller.getSnapshot().running).toBe(true) })
+      resolveStale?.()
+      await new Promise(resolve => setTimeout(resolve, 10))
+      expect(controller.getSnapshot().running).toBe(true)
+    } finally {
+      controller.dispose()
+    }
   })
 
   it('hydrates and immediately updates the current session chrome', async () => {
@@ -279,9 +376,10 @@ describe('TuiController', () => {
       items: [{ value: 'workspace-write' }, { value: 'danger-full-access' }],
     })
     await controller.choosePicker('danger-full-access')
-    expect(fake.prompt).toHaveBeenLastCalledWith(expect.objectContaining({
+    expect(fake.prompt).not.toHaveBeenCalledWith(expect.objectContaining({
       sessionId: SID, content: [{ type: 'text', text: '/permission danger-full-access' }],
     }))
+    expect(controller.getSnapshot().notice).toContain('当前连接不支持权限切换')
     expect(controller.getSnapshot().picker).toBeUndefined()
     await controller.submit('/permission')
     expect(controller.getSnapshot().picker).toMatchObject({ kind: 'permission', current: 'workspace-write' })

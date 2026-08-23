@@ -320,6 +320,31 @@ describe('pi-tui terminal application', () => {
     application.stop()
   })
 
+  it('renders a settled generic command result expanded by the projection', async () => {
+    const terminal = new TestTerminal(100, 18)
+    const controller = new TestController({
+      rows: [{
+        id: 'command-approval-1', seq: 1, kind: 'command', text: '/ai-approval',
+        detail: 'AI 审批：通过（仅本次）\n危险级别：medium\n授权判断：high\n原因：用户明确授权\n审批模型：reviewer',
+        status: 'completed',
+      }],
+      expanded: ['command-approval-1'],
+      running: true,
+    })
+    const application = new TerminalApplication(controller.asController(), { continueLatest: false }, { terminal })
+    application.start()
+    await settle(terminal)
+
+    const viewport = terminal.viewport()
+    expect(viewport).toContain('▾ ✓ 命令 · /ai-approval')
+    expect(viewport).toContain('AI 审批：通过（仅本次）')
+    expect(viewport).toContain('危险级别：medium')
+    expect(viewport).toContain('授权判断：high')
+    expect(viewport).toContain('原因：用户明确授权')
+    expect(viewport).toContain('审批模型：reviewer')
+    application.stop()
+  })
+
   it('uses ScrollView follow-end and preserves a manual scroll position while content grows', async () => {
     const terminal = new TestTerminal(90, 18)
     const rows: TuiViewState['rows'] = Array.from({ length: 30 }, (_, index) => ({

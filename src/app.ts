@@ -15,7 +15,7 @@ import type {} from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-cmdline'
 import type {} from '@deepseek-ai/dsh-message-feedback'
 import { TuiController } from './controller.ts'
-import { createLocalExtensions } from './extensions.ts'
+import { createLocalExtensions, createRemoteExtensions } from './extensions.ts'
 import { RemoteFileReferenceClient } from './file-reference.ts'
 import type { Config } from './index.ts'
 import { InProcessApiClient, selectTuiApi, type RemoteRpcCarrier } from './remote.ts'
@@ -81,7 +81,7 @@ export function apply(ctx: Context, config: Config): void {
       const controller = new TuiController(
         selected.api,
         selected.remote
-          ? {}
+          ? createRemoteExtensions(selected.api as unknown as RemoteRpcCarrier)
           : createLocalExtensions(ctx, { apiProxy, agents, inventory, runner, feedback }),
         { setTerminalTitle: title => { application?.setTitle(title) } },
       )

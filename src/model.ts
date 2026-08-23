@@ -806,9 +806,10 @@ export function applySessionEvent(
       status: 'running',
     })
     case 'command/done': {
+      const id = `command-${String(event.data.commandId)}`
       const status = event.data.kind === 'success' ? 'completed' as const : 'failed' as const
-      return upsertRow(next, {
-        id: `command-${String(event.data.commandId)}`,
+      const settled = upsertRow(next, {
+        id,
         seq: event.seq,
         kind: 'command',
         text: '命令',
@@ -820,6 +821,9 @@ export function applySessionEvent(
         detail: event.data.text ?? current.detail,
         status,
       }))
+      const row = settled.rows.find(item => item.id === id)
+      if (event.data.text === undefined || row?.kind !== 'command' || settled.expanded.includes(id)) return settled
+      return { ...settled, expanded: [...settled.expanded, id] }
     }
     case 'compaction/start': {
       const id = event.data.sourceCommandId === undefined
@@ -1040,7 +1044,9 @@ export function applyHostFrame(state: TuiViewState, frame: HostFrame): TuiViewSt
       kind: 'error',
       text: frame.message,
     })
-    case 'host/session-removed': return { ...state, phase: 'error', notice: '当前会话已被删除' }
+    case 'host/session-removed': return {
+      ...state, phase: 'error', running: false, notice: '当前会话已被删除',
+    }
     default: return state
   }
 }

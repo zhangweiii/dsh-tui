@@ -187,6 +187,20 @@ describe('tui view projection', () => {
     expect(state.rows[0]?.detail).toContain('保留关键约束')
   })
 
+  it('shows generic command output by default after the command settles', () => {
+    let state = applySessionEvent(createInitialState(), event('command/run', 0, {
+      commandId: 'approval-1', name: 'ai-approval', source: { kind: 'plugin', plugin: 'reviewer' },
+    }))
+    state = applySessionEvent(state, event('command/done', 1, {
+      commandId: 'approval-1', kind: 'success', text: 'AI 审批：通过\n危险级别：medium',
+    }))
+
+    expect(state.rows[0]).toMatchObject({
+      id: 'command-approval-1', kind: 'command', detail: 'AI 审批：通过\n危险级别：medium', status: 'completed',
+    })
+    expect(isExpandedRow(state.rows[0] as never, state.expanded)).toBe(true)
+  })
+
   it('marks failed tool results and closes open tools and retries at a turn boundary', () => {
     let state = applySessionEvent(createInitialState(), event('tool/call', 0, {
       turn: 1, step: 1, callId: 'failed-call', name: 'bash', arguments: '{}',
@@ -427,7 +441,7 @@ describe('tui view projection', () => {
     })
     expect(unchanged).toBe(state)
     state = applyHostFrame(state, { type: 'host/session-removed', sessionId: SID })
-    expect(state).toMatchObject({ phase: 'error', notice: '当前会话已被删除' })
+    expect(state).toMatchObject({ phase: 'error', running: false, notice: '当前会话已被删除' })
     expect(applyHostFrame(state, {
       type: 'stream/error', error: { code: 'internal', message: 'host down', details: {} },
     }).notice).toBe('host down')

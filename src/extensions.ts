@@ -1,4 +1,4 @@
-/** Assembly of the standalone Host-only extension adapters behind TuiHostExtensions. */
+/** Assembly of Host-only extension adapters behind TuiHostExtensions. */
 
 import type { Context } from '@deepseek-ai/cordis'
 import type { AgentRegistry } from '@deepseek-ai/dsh-agent'
@@ -12,6 +12,9 @@ import type { JobId, JobRegistry } from '@deepseek-ai/dsh-jobs'
 import type { MessageFeedbackService } from '@deepseek-ai/dsh-message-feedback'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import type { TuiHostExtensions } from './controller.ts'
+import type { RemoteRpcCarrier } from './remote.ts'
+
+const COMMAND_EXECUTE_ENDPOINT = 'commands/execute'
 
 /**
  * Minimal host-side permission-preset service face (the `permissionPresets`
@@ -120,6 +123,36 @@ export function createLocalExtensions(ctx: Context, deps: LocalExtensionDeps): T
         const result = await runner.undefineFromPanel(agent, pluginId as CordisDynamicPluginId)
         if (!result.ok) throw new Error(result.message)
         return `已删除 dynamic plugin ${pluginId} 及其全部 package`
+      },
+    },
+  }
+}
+
+/** Wire remote-only Host capabilities through the shared typert RPC channel. */
+export function createRemoteExtensions(carrier: RemoteRpcCarrier): TuiHostExtensions {
+  return {
+    permission: {
+      set: async (sessionId, preset) => {
+        const line = `/permission ${preset}`
+        const response = await carrier.callRemote(COMMAND_EXECUTE_ENDPOINT, {
+          agentId: sessionId,
+          line,
+          images: [],
+        })
+        if (!response.ok) throw new Error(`${response.error.code}: ${response.error.message}`)
+        if (typeof response.value !== 'object' || response.value === null) {
+          throw new Error('Host 未提供 /permission 命令')
+        }
+        const execution = response.value as { result?: unknown }
+        if (typeof execution.result !== 'object' || execution.result === null) {
+          throw new Error(`${COMMAND_EXECUTE_ENDPOINT}: 返回结果无效`)
+        }
+        const result = execution.result as { kind?: unknown; text?: unknown }
+        if (result.kind === 'error') {
+          throw new Error(typeof result.text === 'string' ? result.text : '/permission 执行失败')
+        }
+        if (result.kind !== 'success') throw new Error(`${COMMAND_EXECUTE_ENDPOINT}: 返回结果无效`)
+        return typeof result.text === 'string' ? result.text : `权限模式已切换为 ${preset}`
       },
     },
   }

@@ -90,8 +90,18 @@ function downloadsExt(): TuiHostExtensions {
   }
 }
 
+function permissionExt(): TuiHostExtensions {
+  return {
+    permission: {
+      set: vi.fn(async (_sessionId, preset) => `权限模式已切换为 ${preset}`),
+    },
+  }
+}
+
 function allExtensions(): TuiHostExtensions {
-  return { ...jobsExt(), ...pluginsExt(), ...cordisExt(), ...feedbackExt(), ...downloadsExt() }
+  return {
+    ...jobsExt(), ...pluginsExt(), ...cordisExt(), ...feedbackExt(), ...downloadsExt(), ...permissionExt(),
+  }
 }
 
 async function started(
@@ -302,9 +312,10 @@ describe('slash-command sweep', () => {
     await controller.submit('/host')
     expect(state().overlay?.title).toBe('Host')
     await controller.submit('/permission danger-full-access')
-    expect(fake.prompt).toHaveBeenLastCalledWith(expect.objectContaining({
+    expect(fake.prompt).not.toHaveBeenCalledWith(expect.objectContaining({
       sessionId: SID, content: [{ type: 'text', text: '/permission danger-full-access' }],
     }))
+    expect(state().notice).toBe('权限模式已切换为 danger-full-access')
 
     // Session-reloading commands come last: they rebuild the state from
     // history and would wipe the queue/jobs frames asserted above.

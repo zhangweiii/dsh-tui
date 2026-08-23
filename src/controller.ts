@@ -259,6 +259,10 @@ export class TuiController {
   private readonly listeners = new Set<Listener>()
   private readonly muxAbort = new AbortController()
   private readonly hostAbort = new AbortController()
+  /** Per-session host-status revisions used to reject stale reconciliation snapshots. */
+  private readonly hostStatusVersions = new Map<string, number>()
+  private runningReconcilePromise: Promise<void> | undefined
+  private runningReconcilePending = false
   private bufferedMux: Array<{ rpcId: Parameters<typeof applyMuxFrame>[1]; frame: Parameters<typeof applyMuxFrame>[2] }> = []
   private historyReady = false
   private started = false
@@ -321,14 +325,81 @@ export class TuiController {
     }
   }
 
+  /**
+   * Reconcile the selected session's edge-driven running flag with the Host's
+   * authoritative session catalog. Concurrent triggers coalesce, while one
+   * trigger received during an in-flight read schedules a final fresh pass.
+   */
+  private reconcileRunning(): Promise<void> {
+    if (this.runningReconcilePromise !== undefined) {
+      this.runningReconcilePending = true
+      return this.runningReconcilePromise
+    }
+    const operation = (async () => {
+      do {
+        this.runningReconcilePending = false
+        await this.reconcileRunningOnce()
+      } while (this.runningReconcilePending && !this.hostAbort.signal.aborted)
+    })().finally(() => {
+      if (this.runningReconcilePromise !== operation) return
+      this.runningReconcilePromise = undefined
+      // A trigger can arrive after the loop's final condition was observed but
+      // before this finally callback runs. Preserve that wake-up explicitly.
+      if (this.runningReconcilePending && !this.hostAbort.signal.aborted) {
+        this.runningReconcilePending = false
+        void this.reconcileRunning()
+      }
+    })
+    this.runningReconcilePromise = operation
+    return operation
+  }
+
+  /** Apply one catalog snapshot unless a newer status edge or navigation won the race. */
+  private async reconcileRunningOnce(): Promise<void> {
+    const sessionId = this.state.sessionId
+    if (sessionId === undefined || this.hostAbort.signal.aborted) return
+    const key = String(sessionId)
+    const version = this.hostStatusVersions.get(key) ?? 0
+    try {
+      const items = value(await this.api.sessions.list({}, this.hostAbort.signal)).items
+      if (this.hostAbort.signal.aborted || this.state.sessionId !== sessionId
+        || (this.hostStatusVersions.get(key) ?? 0) !== version) return
+      const summary = items.find(item => item.sessionId === sessionId)
+      this.update(state => {
+        if (state.sessionId !== sessionId || (this.hostStatusVersions.get(key) ?? 0) !== version) return state
+        return {
+          ...state,
+          sessions: items,
+          ...(summary === undefined || summary.running === state.running ? {} : { running: summary.running }),
+        }
+      })
+    } catch {
+      // Reconciliation is best-effort: the stream error/close notice remains the
+      // user-facing signal, while a later open/resync trigger retries the read.
+    }
+  }
+
   private async openHost(): Promise<void> {
     try {
-      for await (const envelope of this.api.events.host({}, this.hostAbort.signal)) {
-        this.update(state => applyHostFrame(state, envelope.payload))
+      for await (const envelope of this.api.events.host(
+        {}, this.hostAbort.signal, () => { void this.reconcileRunning() },
+      )) {
+        const frame = envelope.payload
+        if (frame.type === 'host/session-status') {
+          const key = String(frame.sessionId)
+          this.hostStatusVersions.set(key, (this.hostStatusVersions.get(key) ?? 0) + 1)
+        }
+        this.update(state => applyHostFrame(state, frame))
       }
-      if (!this.hostAbort.signal.aborted) this.setNotice('主机事件流已关闭')
+      if (!this.hostAbort.signal.aborted) {
+        await this.reconcileRunning()
+        this.setNotice('主机事件流已关闭')
+      }
     } catch (error) {
-      if (!this.hostAbort.signal.aborted) this.setNotice(`主机事件流错误：${message(error)}`)
+      if (!this.hostAbort.signal.aborted) {
+        await this.reconcileRunning()
+        this.setNotice(`主机事件流错误：${message(error)}`)
+      }
     }
   }
 
@@ -466,7 +537,10 @@ export class TuiController {
       if (this.target === target) this.setNotice(`事件流恢复失败：${message(error)}`)
     }).finally(() => {
       this.historyResyncing = false
-      if (this.target === target) this.drainBufferedMux()
+      if (this.target === target) {
+        this.drainBufferedMux()
+        void this.reconcileRunning()
+      }
     })
   }
 
@@ -561,6 +635,7 @@ export class TuiController {
     }
     this.publish(next)
     this.drainBufferedMux()
+    void this.reconcileRunning()
   }
 
   private async loadSubagent(address: SubagentAddress, cwd?: string): Promise<void> {
@@ -1883,8 +1958,7 @@ export class TuiController {
   /**
    * Pick or directly switch the permission preset. Without an argument it
    * opens the `/permission` picker from the live `permissions` projection;
-   * with a preset value it forwards `/permission <preset>` to the Harness,
-   * which owns the actual switching logic.
+   * with a preset value it delegates to the selected Host's command service.
    * @param preset - Optional preset value (table key) resolved from the picker.
    */
   private async commandPermission(preset: string): Promise<void> {
@@ -1914,24 +1988,17 @@ export class TuiController {
       this.setNotice(`当前已是权限模式 ${preset}`)
       return
     }
-    // Prefer the local Host's permission service when the TUI runs in-process
-    // (the same capability surfaced by the `/permission` command): switching
-    // directly is independent of the Host's slash-command prompt routing and
-    // reliably updates the `permissions` projection. When connected to a
-    // remote Web Host, fall back to forwarding `/permission <preset>` through
-    // the session prompt, which the Host routes to the command registry.
     this.closePicker()
     const switchClient = this.extensions.permission
-    if (switchClient !== undefined) {
-      try {
-        this.setNotice(await switchClient.set(this.selectedSessionId(), preset))
-      } catch (error) {
-        this.setNotice(`权限切换失败：${message(error)}`)
-      }
+    if (switchClient === undefined) {
+      this.setNotice('当前连接不支持权限切换')
       return
     }
-    const accepted = await this.send(`/permission ${preset}`)
-    if (!accepted) this.setNotice(`权限切换失败：发送 /permission ${preset} 未成功`)
+    try {
+      this.setNotice(await switchClient.set(this.selectedSessionId(), preset))
+    } catch (error) {
+      this.setNotice(`权限切换失败：${message(error)}`)
+    }
   }
 
   private commandStatus(): void {

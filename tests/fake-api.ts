@@ -6,7 +6,9 @@
 
 import { vi } from 'vitest'
 import Schema from '@deepseek-ai/schemastery'
-import { RpcId, type IApiClient, type MuxFrame, type RpcResponse, type SessionSummary } from '@deepseek-ai/dsh-host-apiproxy'
+import {
+  RpcId, type HostFrame, type IApiClient, type MuxFrame, type RpcResponse, type SessionSummary,
+} from '@deepseek-ai/dsh-host-apiproxy'
 import { SessionId } from '@deepseek-ai/dsh-session'
 
 export const SID = SessionId('session-root')
@@ -48,7 +50,10 @@ function deepseekProviderSchema(): unknown {
 
 export function fakeApi(options: {
   items?: SessionSummary[]
+  listItemsByCall?: SessionSummary[][]
   mux?: MuxFrame
+  hostFrames?: HostFrame[]
+  hostReopens?: Promise<void>[]
   listError?: boolean
   hasMoreHistory?: boolean
   subagentHistoryError?: boolean
@@ -163,7 +168,8 @@ export function fakeApi(options: {
             result: { ok: false as const, error: { code: 'internal' as const, message: 'list failed', details: {} } },
           })
         }
-        const items = options.items ?? (lists === 1 ? [] : [summary()])
+        const sequenced = options.listItemsByCall?.[Math.min(lists - 1, options.listItemsByCall.length - 1)]
+        const items = sequenced ?? options.items ?? (lists === 1 ? [] : [summary()])
         return ok({ items })
       }),
       search: vi.fn(() => ok({ items: [], hasMore: false })),
@@ -213,11 +219,21 @@ export function fakeApi(options: {
           yield { rpcId: RpcId('mux-frame'), payload: { type: 'session/jobs' as const, sessionId: SID, jobs: options.jobs } as never }
         }
       },
-      host: async function *(payload: unknown, signal: AbortSignal) {
+      host: async function *(payload: unknown, signal: AbortSignal, onOpen?: () => void) {
         void payload
-        if (!signal.aborted) {
-          yield { rpcId: RpcId('host-frame'), payload: { type: 'host/session-status' as const, sessionId: SID, running: true } }
+        if (signal.aborted) return
+        onOpen?.()
+        const frames = options.hostFrames ?? [{ type: 'host/session-status' as const, sessionId: SID, running: true }]
+        for (const frame of frames) yield { rpcId: RpcId('host-frame'), payload: frame }
+        for (const reopen of options.hostReopens ?? []) {
+          await reopen
+          if (signal.aborted) return
+          onOpen?.()
         }
+        await new Promise<void>((resolve) => {
+          if (signal.aborted) return resolve()
+          signal.addEventListener('abort', () => { resolve() }, { once: true })
+        })
       },
     },
     host: {
