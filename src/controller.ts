@@ -8,7 +8,7 @@ import { pipeline } from 'node:stream/promises'
 import type {
   DownloadsApi, GoalRef, HistoryEntry, IApiClient, ModelProviderGroup, ModelReasoning, PromptContentPart,
   QueuedInboxItem, RpcResponse, SessionSummary, SubagentAddress, WorkspaceId,
-} from '@deepseek-ai/dsh-host-apiproxy'
+} from './contract/index.ts'
 import type { AttachmentId, ImageMediaType } from '@deepseek-ai/dsh-attachment'
 import type { MessageId } from '@deepseek-ai/dsh-llm/brand'
 import type {

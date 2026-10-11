@@ -2,7 +2,7 @@
 
 import type {
   HistoryEntry, HostFrame, JobView, MuxFrame, QueuedInboxItem, RpcId, SessionSummary, ToolEventView,
-} from '@deepseek-ai/dsh-host-apiproxy'
+} from './contract/index.ts'
 import type { MessageId } from '@deepseek-ai/dsh-llm/brand'
 import type { AskUserQuestionItem } from '@deepseek-ai/dsh-user-questions/types'
 import type { ApprovalRequestId } from '@deepseek-ai/dsh-user-approval/types'

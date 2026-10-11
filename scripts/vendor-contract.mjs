@@ -34,8 +34,7 @@ function rewrite(text) {
     .replace(/^export declare const .*\n/gm, '')
     .replace(/^export function .*;\n/gm, '')
     .replace(/^export const .*;\n/gm, '')
-    .replace(/^export \{ RpcId, transportError \} from '\.\/rpc\.ts';\n/gm,
-      "export { RpcId, transportError, SESSION_SEARCH_RESULT_LIMIT, SESSION_SEARCH_SNIPPET_MAX_CODE_POINTS } from './runtime.ts';\n")
+    .replace(/^export \{ RpcId, transportError \} from '\.\/rpc\.ts';\n/gm, '')
     .replace(/^export \{ SESSION_SEARCH_RESULT_LIMIT, SESSION_SEARCH_SNIPPET_MAX_CODE_POINTS, \} from '\.\/session-search\.ts';\n/gm, '')
     .replace(/\n*\/\/# sourceMappingURL=.*$/m, '\n')
 }
@@ -68,5 +67,16 @@ await writeFile(join(target, 'client.ts'), clientText)
 
 const indexPath = join(apiSource, 'index.d.ts')
 const index = rewrite(await readFile(indexPath, 'utf8'))
-await writeFile(join(target, 'index.ts'), HEADER + index)
+// Load-bearing type-only imports: these packages augment SessionProjectionMap,
+// which the frozen vocabulary only references. Without them the projection
+// values the terminal reads (`title`, `goal`, `sessionStats`) are untyped.
+const AUGMENTATIONS = `
+import type {} from '@deepseek-ai/dsh-goal/types'
+import type {} from '@deepseek-ai/dsh-session-stats/types'
+import type {} from '@deepseek-ai/dsh-session-title/types'
+`
+await writeFile(join(target, 'index.ts'), HEADER + index
+  + AUGMENTATIONS
+  + "export type { IApiClient, OpenHost, OpenMux, Respond } from './client.ts';\n\n"
+  + "export { RpcId, transportError, SESSION_SEARCH_RESULT_LIMIT, SESSION_SEARCH_SNIPPET_MAX_CODE_POINTS } from './runtime.ts';\n")
 console.log(`vendored ${names.length + 2} contract modules into src/contract`)

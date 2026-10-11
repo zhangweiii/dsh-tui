@@ -1,5 +1,5 @@
 import Schema from '@deepseek-ai/schemastery'
-import { RpcId, type IApiClient, type RpcResponse } from '@deepseek-ai/dsh-host-apiproxy'
+import { RpcId, type IApiClient, type RpcResponse } from '../src/contract/index.ts'
 import { describe, expect, it, vi } from 'vitest'
 import {
   commitProviderSetup, createProviderSetupDraft, CUSTOM_PROVIDER_VALUE, discoverProviderSetupModels,

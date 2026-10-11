@@ -3,11 +3,11 @@
 import type {
   ApiProxy, ClientResponse, HostFrame, IApiClient, MuxFrame, RpcId, RpcReceipt,
   RpcRequest, RpcResponse, ServerRequest,
-} from '@deepseek-ai/dsh-host-apiproxy'
+} from './contract/index.ts'
 import type {
   RequestPayload, ResponseValue, RpcMethodMap,
-} from '@deepseek-ai/dsh-host-apiproxy/api/rpc-map'
-import type { RpcResult } from '@deepseek-ai/dsh-host-apiproxy/api'
+} from './contract/rpc-map.ts'
+import type { RpcResult } from './contract/index.ts'
 import type { TuiStartupValues } from './startup.ts'
 
 /** Default loopback origin used by the shipped Web profile. */

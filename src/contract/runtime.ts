@@ -6,7 +6,11 @@
  * @module @zhangweiii/dsh-tui/contract/runtime
  */
 
-import type { RpcError, RpcId, RpcResult } from './rpc.ts'
+import type { Branded } from '@deepseek-ai/dsh-brand'
+import type { RpcError, RpcResult } from './rpc.ts'
+
+/** Message correlation id: the initiator mints it; a response echoes the request's id. */
+export type RpcId = Branded<'rpc-id'>
 
 /** Maximum number of sessions returned by one sidebar search. */
 export const SESSION_SEARCH_RESULT_LIMIT = 20

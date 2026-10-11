@@ -56,6 +56,12 @@ export type { ApprovalResponsePayload } from './approvals.ts';
 export type { QuestionResponsePayload } from './questions.ts';
 export type { RpcRequest, RpcResponse } from './rpc.ts';
 export type { ClientRequest, ClientResponse, RpcMessage, RpcReceipt, ServerRequest, ServerResponse, } from './rpc.ts';
-export { RpcId, transportError, SESSION_SEARCH_RESULT_LIMIT, SESSION_SEARCH_SNIPPET_MAX_CODE_POINTS } from './runtime.ts';
 export type { RpcError, RpcErrorCode, RpcErrorDetailsMap, RpcResult } from './rpc.ts';
 export type { RequestPayload, ResponseValue, RpcMethodMap } from './rpc-map.ts';
+
+import type {} from '@deepseek-ai/dsh-goal/types'
+import type {} from '@deepseek-ai/dsh-session-stats/types'
+import type {} from '@deepseek-ai/dsh-session-title/types'
+export type { IApiClient, OpenHost, OpenMux, Respond } from './client.ts';
+
+export { RpcId, transportError, SESSION_SEARCH_RESULT_LIMIT, SESSION_SEARCH_SNIPPET_MAX_CODE_POINTS } from './runtime.ts';

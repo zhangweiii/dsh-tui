@@ -2,7 +2,7 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import type { AgentRegistry } from '@deepseek-ai/dsh-agent'
-import type { ApiProxy } from '@deepseek-ai/dsh-host-apiproxy'
+import type { ApiProxy } from './contract/index.ts'
 import type { DynamicCordisRunnerService } from '@deepseek-ai/dsh-cordis-host-runner'
 import type { PluginInventoryGateway } from '@deepseek-ai/dsh-host-plugin-inventory'
 import type { MessageFeedbackService } from '@deepseek-ai/dsh-message-feedback'

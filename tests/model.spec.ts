@@ -1,7 +1,7 @@
 /** Pure history/live-frame projection into terminal render state. */
 
 import { describe, expect, it } from 'vitest'
-import { RpcId, type MuxFrame } from '@deepseek-ai/dsh-host-apiproxy'
+import { RpcId, type MuxFrame } from '../src/contract/index.ts'
 import { SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
 import {
   applyHistory, applyHostFrame, applyMuxFrame, applySessionEvent, createInitialState, isCollapsibleRow,

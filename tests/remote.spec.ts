@@ -1,6 +1,6 @@
 /** Remote Web-Host transport selection and wire behavior. */
 
-import type { ApiProxy, IApiClient, ServerRequest } from '@deepseek-ai/dsh-host-apiproxy'
+import type { ApiProxy, IApiClient, ServerRequest } from '../src/contract/index.ts'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   DEFAULT_WEB_ORIGIN, InProcessApiClient, RemoteApiClient, selectTuiApi,

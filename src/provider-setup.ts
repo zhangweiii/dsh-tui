@@ -9,7 +9,7 @@ import { getPath, nodeAtPath, rehydrateSchema } from './schema-form.ts'
 import type {
   ConfigurableProviderView, CredentialView, IApiClient,
   SettingsNamespaceView, SettingsPathOpView,
-} from '@deepseek-ai/dsh-host-apiproxy'
+} from './contract/index.ts'
 import { normalizeApiKey } from '@deepseek-ai/dsh-llm'
 
 /** DSH namespace that owns hand-declared pi-ai provider routes. */

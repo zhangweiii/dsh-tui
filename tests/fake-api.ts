@@ -6,7 +6,7 @@
 
 import { vi } from 'vitest'
 import Schema from '@deepseek-ai/schemastery'
-import { RpcId, type IApiClient, type MuxFrame, type RpcResponse, type SessionSummary } from '@deepseek-ai/dsh-host-apiproxy'
+import { RpcId, type IApiClient, type MuxFrame, type RpcResponse, type SessionSummary } from '../src/contract/index.ts'
 import { SessionId } from '@deepseek-ai/dsh-session'
 
 export const SID = SessionId('session-root')
