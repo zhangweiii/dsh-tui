@@ -10,7 +10,7 @@
 import { randomUUID } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
 import type { TypertGatewayService } from '@deepseek-ai/dsh-api-gateway'
-import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
+import { homedir } from 'node:os'
 import { RpcId } from '../contract/runtime.ts'
 import type { HostTransport, WaterfallInvocation } from './client.ts'
 
@@ -53,7 +53,9 @@ export class InProcessTransport implements HostTransport {
   readonly facts: HostTransport['facts']
 
   constructor(private readonly ctx: Context, private readonly gateway: TypertGatewayService) {
-    this.facts = { home: resolveDshHome(), isLoopback: true }
+    // The Web carrier publishes the OS account home on its ready frame; the
+    // in-tree carrier reports the same fact so `/host` abbreviates cwd alike.
+    this.facts = { home: homedir(), isLoopback: true }
   }
 
   /**

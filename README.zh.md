@@ -4,7 +4,7 @@
 
 [English](README.md) | 中文
 
-DeepSeek Harness 的树外交互终端组合包。该目录是一个可单独构建和安装的 npm 包，不加入、也不修改 DeepSeek Harness 源码 workspace。它的 [`cordis.patch.yml`](cordis.patch.yml) 在 `dsh-base` 之上叠加终端 Host 服务和 agent preset roster，但不挂载 HTTP server 或浏览器 runtime。renderer 启动时会连接已经监听 `http://127.0.0.1:3080` 的 Web Host；该地址不可用时，则回退到自身 `ctx.apiProxy` 上的 `InProcessApiClient`。
+DeepSeek Harness 的树外交互终端组合包。该目录是一个可单独构建和安装的 npm 包，不加入、也不修改 DeepSeek Harness 源码 workspace。它的 [`cordis.patch.yml`](cordis.patch.yml) 在 `dsh-base` 之上叠加发布 Typert Remote 接口的 Host controller——session、workspace、job 与 settings——以及它们解析的 roster、inventory、upload 与 feedback 行，但不挂载 HTTP server 或浏览器 runtime。renderer 启动时会连接已经监听 `http://127.0.0.1:3080` 的 Web Host；该地址不可用时，则回退到自身 `ctx.typertGateway` 上的同进程 carrier。
 
 ## 使用方式
 
@@ -15,13 +15,13 @@ dsh --profile tui "explain this repository"
 dsh --profile tui --continue
 dsh --profile tui --resume <session-id>
 dsh --profile tui --cwd <path>
-dsh --profile tui --connect http://127.0.0.1:8080
+dsh --profile tui --connect 'http://127.0.0.1:8080/?token=<启动令牌>'
 dsh --profile tui --standalone
 ```
 
 安装命令会直接从 npm registry 拉取本包（本地检出也可以用 `add .` 安装）。已安装的 `dsh` 命令会用 `dsh-base` 初始化 `tui` profile，并记录本包声明的 `dsh.bundle`；CLI 和内置 profile 模板都不包含 TUI 专用代码。
 
-本包要求宿主已经安装 `dsh 0.1.1-rc.2` 或兼容版本；发布包不会携带第二份 DSH 核心模块。
+本包要求宿主已经安装 `dsh 0.2.0-rc.2` 或兼容版本；发布包不会携带第二份 DSH 核心模块：所有持有服务的 DSH 模块都保持 external，并且 bundle 会通过 Connection 行以 operator Peer 身份发起调用，使同进程 session 与浏览器请求落在同一个 scope 中。
 
 该 profile 默认创建一个持久化会话，并将它挂入工作目录对应的 workspace；系统会创建或复用该 workspace 记录，因此 Web 会把这条会话列在同一分组中。默认 Web Host 可达时，两个客户端使用该 Host 的 workspace 注册表与事件流；因此 Web 会实时收到分组变更以及后续每一条会话事件。`--connect` 可选择非默认 Web origin，`--standalone` 则跳过探测并强制使用隔离的同进程 Host。显式连接失败会终止启动；隐式探测失败会回退到本地。远程新会话默认使用 TUI 进程的当前目录，而不是 Web 进程的目录。
 
@@ -76,7 +76,7 @@ TUI 自己持有的命令会打开终端原生面板。其他 slash command 仍�
 
 共享命令 `/plan` 和 `/compact` 与其他未知 slash command 一样，原样交给 Harness 命令或 skill 路径；它们的持久化生命周期会回到同一个 transcript。`/permission` 由 TUI 本地拦截，打开一个可上下选择的权限模式列表（来自 `permissions` projection），选中后把 `/permission <preset>` 交回 Harness 完成切换。
 
-对话状态来自持久化 history、mux stream 和 Host stream。终端会折叠 assistant 文本与 reasoning、注入的模型上下文、命令与压缩和模型重试生命周期、Host 提供的工具 presentation、作为去重产物行显示的成功 mutation location、持久化 workflow run 及其 member 状态、稳定的 assistant message id、待处理 queue item、后台 job、todo、goal 与其他 projection value、运行状态和实时错误。已完成的 assistant 与 reasoning 文本由 pi-tui `Markdown` 展示标题、强调、列表、引用、代码块、链接和表格；原始 HTML 显示为文本，支持 OSC 8 的终端会把链接显示为可点击链接，流式尾部则保留为紧凑纯文本。界面不再常驻页头；输入区下方的 footer 展示运行状态、agent preset、模型、cwd、会话轮次与步骤、累计 token、cache 命中率、上下文占用与权限模式，计划模式仅在开启或切换中时出现；宽度足够时折叠为单行，不足时按均匀宽度拆成两行。输入区上方的紧凑活动栏只在存在未完成 todo 或活跃 goal、queue、job、workflow 时出现。有未完成 todo 时它默认折叠为一行：同一行显示进度计数（已办/总数）、当前正在执行的 todo 与后台任务摘要，按 Ctrl+T 展开成按类别分节的完整清单——「待办」(已完成的标 ✓ 并置灰、正在执行的标 ◆ 高亮、未开始的标 ·) 与「任务（后台）」(运行中 ●、待停 ◌、失败 ✗；已结束的 job 不再占据活动栏) 各占一节，再按一次收回。`/status` 展示完整 projection 构成与图片限制。`ScrollView` 按渲染行约束 transcript，任何长文本都不能覆盖固定的活动栏、编辑器或 footer。产物路径可以直接交给 `/open`；未结束的工具或 workflow 会在其所属 turn 关闭时标记为中断。history/live 边界按 sequence 去重，surface replacement 不会重复渲染压缩 checkpoint；可回答的 approval 与 question frame 会回填原始 RPC identity。
+对话状态来自持久化 history、mux stream 和 Host stream。终端会折叠 assistant 文本与 reasoning、注入的模型上下文、命令与压缩和模型重试生命周期、本地计算的工具 presentation（0.2.x 线路不再携带 render intent）、作为去重产物行显示的成功 mutation location、持久化 workflow run 及其 member 状态、稳定的 assistant message id、待处理 queue item、后台 job、todo、goal 与其他 projection value、运行状态和实时错误。已完成的 assistant 与 reasoning 文本由 pi-tui `Markdown` 展示标题、强调、列表、引用、代码块、链接和表格；原始 HTML 显示为文本，支持 OSC 8 的终端会把链接显示为可点击链接，流式尾部则保留为紧凑纯文本。界面不再常驻页头；输入区下方的 footer 展示运行状态、agent preset、模型、cwd、会话轮次与步骤、累计 token、cache 命中率、上下文占用与权限模式，计划模式仅在开启或切换中时出现；宽度足够时折叠为单行，不足时按均匀宽度拆成两行。输入区上方的紧凑活动栏只在存在未完成 todo 或活跃 goal、queue、job、workflow 时出现。有未完成 todo 时它默认折叠为一行：同一行显示进度计数（已办/总数）、当前正在执行的 todo 与后台任务摘要，按 Ctrl+T 展开成按类别分节的完整清单——「待办」(已完成的标 ✓ 并置灰、正在执行的标 ◆ 高亮、未开始的标 ·) 与「任务（后台）」(运行中 ●、待停 ◌、失败 ✗；已结束的 job 不再占据活动栏) 各占一节，再按一次收回。`/status` 展示完整 projection 构成与图片限制。`ScrollView` 按渲染行约束 transcript，任何长文本都不能覆盖固定的活动栏、编辑器或 footer。产物路径可以直接交给 `/open`；未结束的工具或 workflow 会在其所属 turn 关闭时标记为中断。history/live 边界按 sequence 去重，surface replacement 不会重复渲染压缩 checkpoint；可回答的 approval 与 question frame 会回填原始 RPC identity。
 
 ## 模型体验
 
@@ -100,7 +100,8 @@ TUI 自己持有的命令会打开终端原生面板。其他 slash command 仍�
 - **不模拟浏览器 Client half**：终端可以运行 host-only dynamic Cordis package。模型要求运行带浏览器 Client half 的 package 时，TUI 会立即返回可操作的拒绝结果，而不会让 turn 悬挂。
 - **不模拟浏览器外观控制**：DOM component slot、拖放、browser routing，以及 Web theme 或 locale control 属于平台 presentation，而不是 Host domain 行为。TUI 对应使用键盘命令、文件系统路径、终端颜色和进程 locale。
 - **并发展示必须使用共享 Web Host**：默认探测覆盖随附 Web 端口；Web 监听其他端口时需传入 `--connect`。`--standalone` 保留隔离 Host 路径，但不能与 Web 针对同一个 Harness home 并发运行，因为进程本地 domain 事件与 JSON 存储不会跨 Host 进程协调。
-- **部分 Host 本地管理命令仍只支持 standalone 模式**：message feedback、session export、live plugin inventory、dynamic Cordis control 与后台任务停止（/job-kill）刻意位于 `IApiClient` 之外；终端连接 Web Host 时，对应 TUI 命令会报告该能力不可用。聊天、分组、history、model、projection、queue、approval、question、workspace、settings、image、skill、goal 与 subagent 使用远程 Host 约定。
+- **部分 Host 本地管理命令仍只支持 standalone 模式**：message feedback、live plugin inventory、dynamic Cordis control 与后台任务停止（/job-kill）位于本终端所说话的 Remote 词汇之外；终端连接 Web Host 时，对应 TUI 命令会报告该能力不可用。
+- **终端 profile 不组合 session export 与 preset realm**：0.2.x 把 session export 发布为路由下载而非 client 调用；agent preset realm 会挂载仅限 scope 的行（persona 即是其一），而单会话的终端 profile 没有对应的 agent scope。因此终端在进程级组合自己的 agent：`/export`、`/presets`、`/preset`、`/preset-read`、`/preset-copy`、`/preset-open`、`/preset-remove` 会报告该能力不可用，而不会在 turn 中途失败；`dsh-base` 挂载的工具、prompt section 与委派行仍全部对模型可用。聊天、分组、history、model、projection、queue、approval、question、workspace、settings、image、skill、goal 与 subagent 使用远程 Host 约定。
 - **每个终端只选择一个 session**：其他 session 仍可在 Host 上继续运行，但当前进程一次只渲染一个 transcript，并且面板只保留当前可回答 interaction。
 - **`ctx.appExit` 由启动器持有**：在 `dsh` 外部挂载本组合包时，宿主必须提供有界退出请求。
 
