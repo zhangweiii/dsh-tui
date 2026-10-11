@@ -10,19 +10,9 @@ import type {
 import type { PluginInventoryGateway } from '@deepseek-ai/dsh-host-plugin-inventory'
 import type { JobId, JobRegistry } from '@deepseek-ai/dsh-jobs'
 import type { MessageFeedbackService } from '@deepseek-ai/dsh-message-feedback'
+import type { PermissionPresetService } from '@deepseek-ai/dsh-permission-presets'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import type { TuiHostExtensions } from './controller.ts'
-
-/**
- * Minimal host-side permission-preset service face (the `permissionPresets`
- * service from `dsh-permission-presets`), kept untyped here so the TUI stays
- * decoupled from that optional Host plugin. `set` is the same imperative
- * behind the Host's `/permission` command: it writes the `permission/preset`
- * plus the changed knob events on the session's log.
- */
-interface PermissionPresetLike {
-  set(session: { events: readonly unknown[] }, preset: string): void
-}
 
 /** Services resolved from the settled standalone Host context. */
 export interface LocalExtensionDeps {
@@ -60,10 +50,10 @@ export function createLocalExtensions(ctx: Context, deps: LocalExtensionDeps): T
   return {
     downloads: apiProxy.downloads,
     ...(feedback === undefined ? {} : { feedback }),
-    plugins: { list: () => inventory.list().entries },
+    plugins: { list: async () => (await inventory.list()).entries },
     permission: {
       set: async (sessionId, preset) => {
-        const permission = ctx.get('permissionPresets') as PermissionPresetLike | undefined
+        const permission = ctx.get('permissionPresets') as PermissionPresetService | undefined
         if (permission === undefined) throw new Error('Host 未组合权限服务（dsh-permission-presets）')
         const agent = agents.get(sessionId)
         if (agent === undefined) throw new Error(`session ${sessionId} 当前没有 live agent`)

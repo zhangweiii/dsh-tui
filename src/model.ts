@@ -7,15 +7,18 @@ import type { MessageId } from '@deepseek-ai/dsh-llm/brand'
 import type { AskUserQuestionItem } from '@deepseek-ai/dsh-user-questions/types'
 import type { ApprovalRequestId } from '@deepseek-ai/dsh-user-approval/types'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm/types'
-import type { SessionEvent, SessionId, TodoItem } from '@deepseek-ai/dsh-session'
+import type { SessionEvent, SessionId } from '@deepseek-ai/dsh-session'
+import type { TodoItem } from '@deepseek-ai/dsh-tool-todo'
 // Load-bearing type-only imports: these packages augment the SessionEvent union
 // (and its payload types) via module augmentation. Deleting them loses the
 // event types folded below and breaks the typecheck.
-import type {} from '@deepseek-ai/dsh-agent-presets'
+import type {} from '@deepseek-ai/dsh-agent-preset-registry'
 import type {} from '@deepseek-ai/dsh-commands/types'
 import type {} from '@deepseek-ai/dsh-compaction/types'
 import type {} from '@deepseek-ai/dsh-llm-retry/types'
+import type {} from '@deepseek-ai/dsh-tool-todo'
 import type {} from '@deepseek-ai/dsh-tool-workflow/types'
+import './contract/stream-events.ts'
 import type { ProviderSetupDraft } from './provider-setup.ts'
 import { displayJson } from './format.ts'
 
@@ -246,7 +249,6 @@ export function contentText(content: readonly ContentBlock[], includeReasoning =
     else if (block.type === 'image') {
       parts.push(`[图片 ${block.attachment.attachmentId} · ${block.attachment.width}×${block.attachment.height}]`)
     }
-    else if (block.type === 'tool-result') parts.push(contentText(block.content, includeReasoning))
   }
   return parts.filter(Boolean).join('\n')
 }
@@ -489,8 +491,9 @@ function mutationPaths(view: ToolEventView | undefined): string[] {
 }
 
 function successfulToolResult(event: SessionEvent<'tool/result'>): boolean {
-  const result = event.data.message.content[0]
-  return result.isError !== true && event.data.error === undefined
+  // The failure bit lives on the message itself; `error` carries the tool's
+  // own reason alongside it.
+  return event.data.message.isError !== true && event.data.error === undefined
 }
 
 function replacementEvent(

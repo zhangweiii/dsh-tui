@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { RpcId, type MuxFrame } from '../src/contract/index.ts'
+import { SessionSeq } from '@deepseek-ai/dsh-session'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import { LOCAL_COMMANDS } from '../src/commands.ts'
 import { TuiController } from '../src/controller.ts'
@@ -125,7 +126,7 @@ describe('TuiController', () => {
         sessionId: SID,
         event: {
           type: 'assistant/chunk',
-          seq: 12,
+          seq: SessionSeq(12),
           time: 12,
           data: { turn: 2, step: 1, chunk: { type: 'text-delta', index: 0, text: '单次增量' } },
         },
@@ -819,7 +820,7 @@ describe('TuiController', () => {
       remove: vi.fn(() => Promise.resolve('已删除')),
     }
     const plugins = {
-      list: vi.fn(() => [{ entryId: 'api-gateway', moduleName: '@deepseek-ai/dsh-host-apiproxy', enabled: true, fiberPhase: 'active' }]),
+      list: vi.fn(() => Promise.resolve([{ entryId: 'api-gateway', moduleName: '@deepseek-ai/dsh-client-connection', enabled: true, fiberPhase: 'active' }])),
     }
     const controller = new TuiController(fake.api, { cordis, plugins })
     await controller.start({ continueLatest: false, resume: SID })

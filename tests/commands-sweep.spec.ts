@@ -40,7 +40,7 @@ function jobsExt(): TuiHostExtensions {
 function pluginsExt(): TuiHostExtensions {
   return {
     plugins: {
-      list: () => [{ entryId: 'entry-1', moduleName: 'mod', enabled: true, fiberPhase: 'running' }],
+      list: () => Promise.resolve([{ entryId: 'entry-1', moduleName: 'mod', enabled: true, fiberPhase: 'running' }]),
     },
   }
 }

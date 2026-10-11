@@ -2,16 +2,16 @@
 
 import { describe, expect, it } from 'vitest'
 import { RpcId, type MuxFrame } from '../src/contract/index.ts'
-import { SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
+import { SessionId, SessionSeq, type SessionEvent } from '@deepseek-ai/dsh-session'
 import {
   applyHistory, applyHostFrame, applyMuxFrame, applySessionEvent, createInitialState, isCollapsibleRow,
   isExpandedRow, projectionStatus, toggleFold, type TuiViewState,
 } from '../src/model.ts'
 
 const SID = SessionId('session-tui')
-const event = (type: SessionEvent['type'], seq: number, data: unknown): SessionEvent => ({
-  type, seq, time: seq, data,
-} as SessionEvent)
+const event = <T extends SessionEvent['type']>(type: T, seq: number, data: unknown): SessionEvent<T> => ({
+  type, seq: SessionSeq(seq), time: seq, data,
+} as SessionEvent<T>)
 
 describe('tui view projection', () => {
   it('folds user, streaming assistant, final reasoning, and deduplicated history', () => {
@@ -63,8 +63,8 @@ describe('tui view projection', () => {
       turn: 1,
       step: 1,
       message: {
-        id: 'tool-1', role: 'user', source: { kind: 'tool', callId: 'call-1' },
-        content: [{ type: 'tool-result', toolCallId: 'call-1', content: [{ type: 'text', text: '/work' }], isError: false }],
+        id: 'tool-1', role: 'tool', source: { kind: 'tool', callId: 'call-1' },
+        toolCallId: 'call-1', content: [{ type: 'text', text: '/work' }], isError: false,
       },
     })
     let state = applyHistory(createInitialState(), [{ event: call }, { event: result }])
@@ -93,7 +93,7 @@ describe('tui view projection', () => {
         id: 'compact-checkpoint', role: 'user', source: { kind: 'plugin', plugin: 'compaction' },
         content: [{ type: 'text', text: '不应重复显示的摘要' }],
       }),
-      surfaceOp: { op: 'replace', start: 0, end: 0 },
+      surfaceOp: { op: 'replace', startSeq: SessionSeq(0), endSeq: SessionSeq(0) },
     } as SessionEvent
     state = applySessionEvent(state, replacement)
 
@@ -118,11 +118,8 @@ describe('tui view projection', () => {
       turn: 1,
       step: 1,
       message: {
-        id: 'tool-1', role: 'user', source: { kind: 'tool', callId: 'call-1' },
-        content: [{
-          type: 'tool-result', toolCallId: 'call-1',
-          content: [{ type: 'text', text: '/work' }], isError: false,
-        }],
+        id: 'tool-1', role: 'tool', source: { kind: 'tool', callId: 'call-1' },
+        toolCallId: 'call-1', content: [{ type: 'text', text: '/work' }], isError: false,
       },
     }))
     expect(state.rows.map(row => row.kind)).toEqual(['context', 'context', 'tool'])
@@ -195,11 +192,8 @@ describe('tui view projection', () => {
       turn: 1,
       step: 1,
       message: {
-        id: 'failed-result', role: 'user', source: { kind: 'tool', callId: 'failed-call' },
-        content: [{
-          type: 'tool-result', toolCallId: 'failed-call',
-          content: [{ type: 'text', text: 'exit 1' }], isError: true,
-        }],
+        id: 'failed-result', role: 'tool', source: { kind: 'tool', callId: 'failed-call' },
+        toolCallId: 'failed-call', content: [{ type: 'text', text: 'exit 1' }], isError: true,
       },
     }))
     state = applySessionEvent(state, event('tool/call', 2, {

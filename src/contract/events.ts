@@ -10,8 +10,9 @@ import type { AskUserQuestionItem } from '@deepseek-ai/dsh-user-questions/types'
 import type { ApprovalOutcome, ApprovalRequestId } from '@deepseek-ai/dsh-user-approval/types';
 import type { Message } from '@deepseek-ai/dsh-llm/types';
 import type { MessageId } from '@deepseek-ai/dsh-llm/brand';
-import type { CallId } from '@deepseek-ai/dsh-llm/brand';
-import type { JsonValue, SessionEvent, SessionId } from '@deepseek-ai/dsh-session/types';
+import type { ToolCallId } from '@deepseek-ai/dsh-llm/brand';
+import type { JsonValue } from '@deepseek-ai/dsh-util-values';
+import type { SessionEvent, SessionId } from '@deepseek-ai/dsh-session/types';
 import type { ToolCallView, ToolResultView } from '@deepseek-ai/dsh-tools/presentation';
 import type { RpcError, RpcId, RpcRequest } from './rpc.ts';
 import type { JobView } from './jobs.ts';
@@ -78,7 +79,7 @@ export type MuxFrame = {
     sessionId: SessionId;
     approvalId: ApprovalRequestId;
     toolName: string;
-    callId?: CallId;
+    callId?: ToolCallId;
     reason?: string;
 } | {
     type: 'approval/resolved';

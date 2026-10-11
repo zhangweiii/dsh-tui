@@ -71,12 +71,12 @@ interface TuiCordisClient {
 }
 
 interface TuiPluginInventoryClient {
-  list(): ReadonlyArray<{
+  list(): Promise<ReadonlyArray<{
     entryId: string
     moduleName: string
     enabled: boolean
     fiberPhase: string | null
-  }>
+  }>>
 }
 
 /** Host-only job lifecycle access: kill an owned `ctx.jobs` background task. */
@@ -1703,10 +1703,10 @@ export class TuiController {
     this.setNotice(result)
   }
 
-  private commandPlugins(): void {
+  private async commandPlugins(): Promise<void> {
     const plugins = this.extensions.plugins
     if (plugins === undefined) throw new Error('当前组合未启用 Host plugin inventory')
-    const entries = plugins.list()
+    const entries = await plugins.list()
     this.showOverlay('Host Plugins', entries.length === 0 ? ['当前没有已配置插件'] : entries.map(entry => (
       `${entry.enabled ? '●' : '○'} ${entry.entryId} · ${entry.fiberPhase ?? 'inactive'} · ${entry.moduleName}`
     )))
@@ -2077,7 +2077,7 @@ export class TuiController {
     '/directories': rest => this.commandDirectories(rest),
     '/mkdir': rest => this.commandMkdir(rest),
     '/open': rest => this.commandOpen(rest),
-    '/plugins': () => { this.commandPlugins() },
+    '/plugins': () => this.commandPlugins(),
     '/cordis': () => { this.commandCordis() },
     '/cordis-run': rest => this.commandCordisRun(rest),
     '/cordis-stop': rest => this.commandCordisStop(rest),
