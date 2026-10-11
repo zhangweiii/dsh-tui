@@ -14,7 +14,9 @@ import { homedir } from 'node:os'
 import { randomUUID } from 'node:crypto'
 import type { SessionAddress } from '@deepseek-ai/dsh-api-session-controller/types'
 import type { SessionListValue, SessionSummary as RemoteSessionSummary } from '@deepseek-ai/dsh-api-session-controller/types'
+import type { Message } from '@deepseek-ai/dsh-llm/types'
 import type { SessionEvent, SessionId, SessionSeq } from '@deepseek-ai/dsh-session'
+import type { MessageId } from '@deepseek-ai/dsh-llm/brand'
 import type { ApprovalRequestEvent, ApprovalOutcome, ApprovalRequestId } from '@deepseek-ai/dsh-user-approval/types'
 import type { AskUserQuestionItem } from '@deepseek-ai/dsh-user-questions/types'
 import type { ToolEventView } from '../contract/events.ts'
@@ -183,6 +185,17 @@ type AssistantStreamFrame =
  */
 export function addressSessionId(address: SessionAddress): SessionId {
   return (address.kind === 'session' ? address.sessionId : address.childSessionId) as SessionId
+}
+
+function queuedItems(value: unknown): QueuedInboxItem[] {
+  const state = value as { 'next-turn'?: readonly unknown[], 'next-step'?: readonly unknown[] } | undefined
+  const build = (values: readonly unknown[] | undefined, placement: 'queued' | 'steering'): QueuedInboxItem[] =>
+    (values ?? []).map((item, index) => ({
+      id: (((item as { id?: string }).id) ?? `${placement}-${String(index)}`) as MessageId,
+      placement,
+      message: item as Message,
+    }))
+  return [...build(state?.['next-turn'], 'queued'), ...build(state?.['next-step'], 'steering')]
 }
 
 function entryFor(wire: SessionWireEvent, calls: Map<string, { name: string, arguments: string }>): HistoryEntry {
@@ -581,13 +594,7 @@ export class HostApiClient implements TuiHostApi {
           }
           if (frame.type !== 'projection' || frame.sessionId !== sessionId) continue
           if (frame.key === undefined) continue
-          this.pushMux({
-            type: 'session/projection',
-            sessionId,
-            key: frame.key,
-            value: (frame as { value?: unknown }).value,
-            seq: frame.seq ?? 0,
-          })
+          this.pushProjection(sessionId, frame.key, (frame as { value?: unknown }).value, frame.seq ?? 0)
         }
       } catch (error) {
         if (!controller.signal.aborted) this.pushMux({ type: 'stream/error', error: remoteFailure(error) })
@@ -610,9 +617,17 @@ export class HostApiClient implements TuiHostApi {
 
   /** Push one projection update per key of a baseline block. */
   private pushProjections(sessionId: SessionId, values: Readonly<Record<string, unknown>>, asOfSeq: number): void {
-    for (const [key, value] of Object.entries(values)) {
-      this.pushMux({ type: 'session/projection', sessionId, key, value, seq: asOfSeq })
-    }
+    for (const [key, value] of Object.entries(values)) this.pushProjection(sessionId, key, value, asOfSeq)
+  }
+
+  /**
+   * Push one projection update, and for the inbox projection also its
+   * terminal-facing form: the renderer owns a dedicated queue panel, and the
+   * current Host states pending input as a projection rather than a frame.
+   */
+  private pushProjection(sessionId: SessionId, key: string, value: unknown, seq: number): void {
+    this.pushMux({ type: 'session/projection', sessionId, key, value, seq })
+    if (key === 'inbox') this.pushMux({ type: 'session/queue', sessionId, items: queuedItems(value) })
   }
 
   /** Answer one pending approval or question; the renderer owns the identity. */
