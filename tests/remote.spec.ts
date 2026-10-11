@@ -215,8 +215,9 @@ describe('Gateway mux and forwarded events', () => {
     globalThis.WebSocket = FakeSocket as unknown as typeof WebSocket
     const posts: { url: string, body: Record<string, unknown> }[] = []
     globalThis.fetch = vi.fn((input: string | URL, init?: RequestInit) => {
-      posts.push({ url: String(input), body: JSON.parse(String(init?.body)) as Record<string, unknown> })
-      return Promise.resolve(Response.json({ type: 'server-response', rpcId: 'x', result: { ok: true, value: {} } }))
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>
+      posts.push({ url: String(input), body })
+      return Promise.resolve(Response.json({ type: 'server-response', rpcId: body['rpcId'], result: { ok: true, value: {} } }))
     }) as unknown as typeof fetch
     const transport = new RemoteTransport('http://127.0.0.1:4180')
     const emitted: unknown[][] = []

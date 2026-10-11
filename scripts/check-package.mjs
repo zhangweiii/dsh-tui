@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -36,6 +36,16 @@ try {
     'install', '--ignore-scripts', '--legacy-peer-deps', '--no-audit', '--no-fund',
     packed,
   ], { cwd: sandbox, stdio: 'inherit' })
+  // The bundle mounts into a DSH host, so the smoke test links this checkout's
+  // host tree in for the declared peers instead of shipping a second copy: a
+  // real profile resolves them from the tree the launcher composed.
+  const linked = join(sandbox, 'node_modules/@deepseek-ai')
+  for (const name of Object.keys(manifest.peerDependencies ?? {})) {
+    const source = join(root, 'node_modules', name)
+    if (!existsSync(source)) throw new Error(`${name} is not installed in the checkout`)
+    mkdirSync(linked, { recursive: true })
+    symlinkSync(source, join(linked, name.replace('@deepseek-ai/', '')), 'dir')
+  }
   execFileSync(process.execPath, ['--input-type=module', '--eval', [
     "await import('@zhangweiii/dsh-tui')",
     "await import('@zhangweiii/dsh-tui/startup')",

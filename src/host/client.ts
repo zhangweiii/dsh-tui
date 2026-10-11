@@ -14,8 +14,7 @@ import { homedir } from 'node:os'
 import { randomUUID } from 'node:crypto'
 import type { SessionAddress } from '@deepseek-ai/dsh-api-session-controller/types'
 import type { SessionListValue, SessionSummary as RemoteSessionSummary } from '@deepseek-ai/dsh-api-session-controller/types'
-import { SessionSeq } from '@deepseek-ai/dsh-session'
-import type { SessionEvent, SessionId } from '@deepseek-ai/dsh-session'
+import type { SessionEvent, SessionId, SessionSeq } from '@deepseek-ai/dsh-session'
 import type { ApprovalRequestEvent, ApprovalOutcome, ApprovalRequestId } from '@deepseek-ai/dsh-user-approval/types'
 import type { AskUserQuestionItem } from '@deepseek-ai/dsh-user-questions/types'
 import type { ToolEventView } from '../contract/events.ts'
@@ -513,7 +512,7 @@ export class HostApiClient implements TuiHostApi {
     if (attempt === undefined) return
     const event = {
       type: 'assistant/chunk' as const,
-      seq: SessionSeq(frame.index),
+      seq: frame.index as SessionSeq,
       time: frame.time,
       data: { turn: attempt.turn, step: attempt.step, chunk: frame.chunk as never },
     }

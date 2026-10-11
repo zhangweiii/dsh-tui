@@ -15,10 +15,11 @@ export default defineConfig({
     moduleSideEffects: id => id !== '@deepseek-ai/cordis',
   },
   deps: {
-    onlyBundle: [
-      '@deepseek-ai/dsh-llm',
-      '@deepseek-ai/dsh-timeout',
-    ],
+    // The bundle inlines the one leaf path helper it needs at runtime and keeps
+    // every service-owning DSH module external: the profile tree this bundle
+    // mounts into already carries exactly one copy of each, and a second copy
+    // would give the Host two identities for the same service class.
+    onlyBundle: ['@deepseek-ai/dsh-home-paths'],
     dts: { neverBundle: true },
   },
   clean: true,

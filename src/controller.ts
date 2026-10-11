@@ -18,7 +18,7 @@ import type {
 import type { AskUserQuestionAnswer } from '@deepseek-ai/dsh-user-questions/types'
 import type { ApprovalOutcome } from '@deepseek-ai/dsh-user-approval/types'
 import type { SessionId } from '@deepseek-ai/dsh-session'
-import type { TuiHostApi } from './host/api.ts'
+import type { SessionAddress, TuiHostApi } from './host/api.ts'
 import type { TuiStartupValues } from './startup.ts'
 import { helpLines } from './commands.ts'
 import {
@@ -258,7 +258,8 @@ function feedbackError(result: { ok: false; error: { code: string } }): Error {
 export class TuiController {
   private state = createInitialState()
   private readonly listeners = new Set<Listener>()
-  private readonly muxAbort = new AbortController()
+  private muxAbort: AbortController | undefined
+  private muxKey: string | undefined
   private readonly hostAbort = new AbortController()
   private bufferedMux: Array<{ rpcId: Parameters<typeof applyMuxFrame>[1]; frame: Parameters<typeof applyMuxFrame>[2] }> = []
   private historyReady = false
@@ -303,18 +304,40 @@ export class TuiController {
     this.publish(update(this.state))
   }
 
-  private async openMux(onOpen: () => void): Promise<void> {
+  /**
+   * Point the live-session subscription at one address. The current Host
+   * follows one Session (or subagent child) per generation, so switching the
+   * displayed transcript restarts the generation instead of filtering a
+   * host-wide stream.
+   * @param address - session or subagent child to follow.
+   */
+  private async subscribeSession(address: SessionAddress): Promise<void> {
+    const key = address.kind === 'session'
+      ? `session:${address.sessionId}`
+      : `subagent:${address.parentSessionId}/${address.childSessionId}`
+    if (this.muxKey === key && this.muxAbort !== undefined) return
+    this.muxAbort?.abort()
+    const controller = new AbortController()
+    this.muxAbort = controller
+    this.muxKey = key
+    let markOpen: (() => void) | undefined
+    const opened = new Promise<void>((resolve) => { markOpen = resolve })
+    void this.openMux(controller.signal, address, () => { markOpen?.() })
+    await opened
+  }
+
+  private async openMux(signal: AbortSignal, address: SessionAddress, onOpen: () => void): Promise<void> {
     try {
-      for await (const envelope of this.api.events.mux({}, this.muxAbort.signal, onOpen)) {
+      for await (const envelope of this.api.events.mux({ address }, signal, onOpen)) {
         if (!this.historyReady) {
           this.bufferedMux.push({ rpcId: envelope.rpcId, frame: envelope.payload })
           continue
         }
         this.applyMuxEnvelope(envelope.rpcId, envelope.payload)
       }
-      if (!this.muxAbort.signal.aborted) this.setNotice('会话事件流已关闭')
+      if (!signal.aborted) this.setNotice('会话事件流已关闭')
     } catch (error) {
-      if (!this.muxAbort.signal.aborted) this.setNotice(`会话事件流错误：${message(error)}`)
+      if (!signal.aborted) this.setNotice(`会话事件流错误：${message(error)}`)
     } finally {
       // Also release startup when the carrier fails before becoming readable;
       // the baseline request will surface the durable failure state.
@@ -517,6 +540,7 @@ export class TuiController {
     if (resetNavigation) this.targetStack.length = 0
     this.target = { kind: 'session', summary }
     this.historyReady = false
+    await this.subscribeSession({ kind: 'session', sessionId: summary.sessionId })
     const baseline = summary.projections?.values ?? {}
     this.publish({
       ...createInitialState(),
@@ -566,6 +590,7 @@ export class TuiController {
 
   private async loadSubagent(address: SubagentAddress, cwd?: string): Promise<void> {
     this.historyReady = false
+    await this.subscribeSession({ kind: 'subagent', ...address })
     const sessions = this.state.sessions
     const history = await (async () => {
       try {
@@ -612,10 +637,6 @@ export class TuiController {
       const sessions = listed.items.some(item => item.sessionId === summary.sessionId)
         ? listed.items.map(item => item.sessionId === summary.sessionId ? summary : item)
         : [summary, ...listed.items]
-      let markMuxOpen: (() => void) | undefined
-      const muxOpen = new Promise<void>((resolve) => { markMuxOpen = resolve })
-      void this.openMux(() => { markMuxOpen?.() })
-      await muxOpen
       await this.loadSession(summary, sessions)
       void this.openHost()
       if (config.initialPrompt !== undefined) await this.send(config.initialPrompt)
@@ -2279,7 +2300,7 @@ export class TuiController {
 
   /** Abort both streams and stop publishing to the unmounted terminal. */
   dispose(): void {
-    this.muxAbort.abort()
+    this.muxAbort?.abort()
     this.hostAbort.abort()
     this.listeners.clear()
   }
