@@ -410,3 +410,12 @@ export const UNARY_ENDPOINTS = {
 
 /** One row key of {@link UNARY_ENDPOINTS}. */
 export type UnaryMethod = keyof typeof UNARY_ENDPOINTS
+
+/**
+ * Look up one unary endpoint mapping.
+ * @param method - contract method key.
+ * @returns the mapping row.
+ */
+export function unaryMapping<K extends UnaryMethod>(method: K): UnaryMapping<K> {
+  return UNARY_ENDPOINTS[method] as UnaryMapping<K>
+}

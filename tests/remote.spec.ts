@@ -1,10 +1,10 @@
-/** Remote Web-Host transport selection and wire behavior. */
+/** Web Host carrier: origin policy, selection, unary envelopes, and live frames. */
 
-import type { ApiProxy, IApiClient, ServerRequest } from '../src/contract/index.ts'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import {
-  DEFAULT_WEB_ORIGIN, InProcessApiClient, RemoteApiClient, selectTuiApi,
-} from '../src/remote.ts'
+import { HostApiClient, type HostTransport } from '../src/host/client.ts'
+import { RemoteTransport, loopbackHostname, webOrigin } from '../src/host/remote.ts'
+import { selectTuiApi } from '../src/host/selection.ts'
+import { SID } from './fake-api.ts'
 
 const originalFetch = globalThis.fetch
 const originalWebSocket = globalThis.WebSocket
@@ -13,265 +13,244 @@ afterEach(() => {
   globalThis.fetch = originalFetch
   globalThis.WebSocket = originalWebSocket
   vi.restoreAllMocks()
-  vi.useRealTimers()
 })
 
-function hostDescription(rpcId: string): Response {
-  return Response.json({
-    type: 'server-response',
-    rpcId,
-    result: {
-      ok: true,
-      value: {
-        version: 'test', cwd: '/web-cwd', attachedSessions: 0, canOpenPath: false,
-      },
-    },
-  })
+/** Minimal stand-in for the Gateway WebSocket mux. */
+class FakeSocket {
+  static readonly instances: FakeSocket[] = []
+  static readonly CONNECTING = 0
+  static readonly OPEN = 1
+  static readonly CLOSING = 2
+  static readonly CLOSED = 3
+  readyState = 0
+  readonly sent: string[] = []
+  private readonly listeners = new Map<string, ((event: { data?: unknown }) => void)[]>()
+
+  constructor(readonly url: string) {
+    FakeSocket.instances.push(this)
+    setTimeout(() => {
+      this.readyState = 1
+      this.dispatch('open')
+    }, 0)
+  }
+
+  addEventListener(type: string, listener: (event: never) => void): void {
+    const listeners = this.listeners.get(type) ?? []
+    listeners.push(listener as (event: { data?: unknown }) => void)
+    this.listeners.set(type, listeners)
+  }
+
+  send(message: string): void {
+    this.sent.push(message)
+  }
+
+  close(): void {
+    this.readyState = 3
+    this.dispatch('close')
+  }
+
+  /** Deliver one host→client frame. */
+  receive(frame: unknown): void {
+    this.dispatch('message', { data: JSON.stringify(frame) })
+  }
+
+  /** Last client→host message, parsed. */
+  last(): Record<string, unknown> {
+    return JSON.parse(this.sent.at(-1) ?? '{}') as Record<string, unknown>
+  }
+
+  private dispatch(type: string, event: unknown = {}): void {
+    for (const listener of this.listeners.get(type) ?? []) listener(event as { data?: unknown })
+  }
 }
 
-function apiWithDescribe(result: 'ok' | 'fail'): IApiClient {
-  return {
-    host: {
-      describe: async () => {
-        if (result === 'fail') throw new Error('offline')
-        return {
-          rpcId: 'describe' as never,
-          result: {
-            ok: true,
-            value: { version: 'test', cwd: '/remote', attachedSessions: 0, canOpenPath: false },
-          },
-        }
-      },
-    },
-  } as unknown as IApiClient
+async function settle(): Promise<void> {
+  await new Promise(resolve => setTimeout(resolve, 0))
+  await new Promise(resolve => setTimeout(resolve, 0))
 }
 
-describe('remote Web Host client', () => {
-  it('forwards same-process calls without loading a second Host client package', async () => {
-    const describe = vi.fn(async (request: { rpcId: string; payload: {} }) => ({
-      rpcId: request.rpcId,
-      result: {
-        ok: true as const,
-        value: { version: 'test', cwd: '/local', attachedSessions: 0, canOpenPath: false },
-      },
-    }))
-    const api = { host: { describe } } as unknown as ApiProxy
+/** In-tree client used as the standalone fallback in selection tests. */
+function localClient(): HostApiClient {
+  const transport: HostTransport = {
+    facts: { home: '/home/u', isLoopback: true },
+    invoke: () => Promise.resolve({}),
+    open: () => (async function* () { /* no frames */ })(),
+    on: () => () => {},
+    onWaterfall: () => () => {},
+    close: () => Promise.resolve(),
+  }
+  return new HostApiClient(transport)
+}
 
-    const response = await new InProcessApiClient(api).host.describe({})
 
-    expect(response.result).toMatchObject({ ok: true, value: { cwd: '/local' } })
-    expect(describe).toHaveBeenCalledWith(expect.objectContaining({ payload: {} }), undefined)
-  })
-
-  it('routes unary calls to the selected Web origin', async () => {
-    const requests: URL[] = []
-    globalThis.fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
-      const request = new Request(input, init)
-      requests.push(new URL(request.url))
-      const body = await request.json() as { rpcId: string }
-      return hostDescription(body.rpcId)
-    })
-
-    const response = await new RemoteApiClient('http://127.0.0.1:4180').host.describe({})
-
-    expect(response.result).toMatchObject({ ok: true, value: { cwd: '/web-cwd' } })
-    expect(requests.map(request => request.href)).toEqual(['http://127.0.0.1:4180/api/host.describe'])
-  })
-
-  it('requires HTTPS for non-loopback Web Hosts', () => {
-    expect(() => new RemoteApiClient('http://example.com')).toThrow('非本机 Web Host 必须使用 HTTPS')
-    expect(() => new RemoteApiClient('http://127.example.com')).toThrow('非本机 Web Host 必须使用 HTTPS')
-    expect(() => new RemoteApiClient('http://192.168.1.20:3080')).toThrow('非本机 Web Host 必须使用 HTTPS')
-    expect(() => new RemoteApiClient('https://example.com')).not.toThrow()
-    expect(() => new RemoteApiClient('http://localhost:3080')).not.toThrow()
-    expect(() => new RemoteApiClient('http://[::1]:3080')).not.toThrow()
-  })
-
-  it('receives live mux frames over the same Web Host WebSocket', async () => {
-    class Socket {
-      static readonly CONNECTING = 0
-      static readonly OPEN = 1
-      static latest: Socket | undefined
-      readonly url: string
-      readyState = Socket.CONNECTING
-      private readonly listeners = new Map<string, Set<(event: Event | MessageEvent) => void>>()
-
-      constructor(url: string | URL) {
-        Socket.latest = this
-        this.url = String(url)
-        queueMicrotask(() => {
-          this.readyState = Socket.OPEN
-          this.emit('open', new Event('open'))
-        })
-      }
-
-      addEventListener(type: string, listener: EventListener): void {
-        const listeners = this.listeners.get(type) ?? new Set()
-        listeners.add(listener as (event: Event | MessageEvent) => void)
-        this.listeners.set(type, listeners)
-      }
-
-      removeEventListener(type: string, listener: EventListener): void {
-        this.listeners.get(type)?.delete(listener as (event: Event | MessageEvent) => void)
-      }
-
-      close(): void {
-        this.readyState = 3
-        this.emit('close', new Event('close'))
-      }
-
-      push(message: ServerRequest): void {
-        this.emit('message', new MessageEvent('message', { data: JSON.stringify(message) }))
-      }
-
-      private emit(type: string, event: Event | MessageEvent): void {
-        for (const listener of this.listeners.get(type) ?? []) listener(event)
-      }
-    }
-    globalThis.WebSocket = Socket as never
-    const client = new RemoteApiClient('http://127.0.0.1:4180')
-    const abort = new AbortController()
-    const stream = client.events.mux({}, abort.signal)[Symbol.asyncIterator]()
-    const next = stream.next()
-    await vi.waitFor(() => { expect(Socket.latest?.url).toBe('ws://127.0.0.1:4180/api/events.mux') })
-    Socket.latest?.push({
-      type: 'server-request', rpcId: 'live-1' as never, method: 'session/subscribed',
-      payload: { type: 'session/subscribed', sessionId: 'session-1', lastSeq: 4 },
-    })
-    expect(await next).toEqual({
-      done: false,
-      value: {
-        rpcId: 'live-1',
-        payload: { type: 'session/subscribed', sessionId: 'session-1', lastSeq: 4 },
-      },
-    })
-    abort.abort()
-  })
-
-  it('reconnects a dropped WebSocket and continues yielding frames', async () => {
-    class Socket {
-      static readonly CONNECTING = 0
-      static readonly OPEN = 1
-      static readonly instances: Socket[] = []
-      readonly url: string
-      readyState = Socket.CONNECTING
-      private readonly listeners = new Map<string, Set<(event: Event | MessageEvent) => void>>()
-
-      constructor(url: string | URL) {
-        Socket.instances.push(this)
-        this.url = String(url)
-        queueMicrotask(() => {
-          this.readyState = Socket.OPEN
-          this.emit('open', new Event('open'))
-        })
-      }
-
-      addEventListener(type: string, listener: EventListener): void {
-        const listeners = this.listeners.get(type) ?? new Set()
-        listeners.add(listener as (event: Event | MessageEvent) => void)
-        this.listeners.set(type, listeners)
-      }
-
-      removeEventListener(type: string, listener: EventListener): void {
-        this.listeners.get(type)?.delete(listener as (event: Event | MessageEvent) => void)
-      }
-
-      close(): void {
-        if (this.readyState === 3) return
-        this.readyState = 3
-        this.emit('close', new Event('close'))
-      }
-
-      push(rpcId: string): void {
-        const message: ServerRequest = {
-          type: 'server-request', rpcId: rpcId as never, method: 'session/subscribed',
-          payload: { type: 'session/subscribed', sessionId: 'session-1', lastSeq: 4 },
-        }
-        this.emit('message', new MessageEvent('message', { data: JSON.stringify(message) }))
-      }
-
-      private emit(type: string, event: Event | MessageEvent): void {
-        for (const listener of this.listeners.get(type) ?? []) listener(event)
-      }
-    }
-    globalThis.WebSocket = Socket as never
-    const client = new RemoteApiClient('http://127.0.0.1:4180')
-    const abort = new AbortController()
-    const onOpen = vi.fn()
-    const stream = client.events.mux({}, abort.signal, onOpen)[Symbol.asyncIterator]()
-
-    const first = stream.next()
-    await vi.waitFor(() => { expect(Socket.instances).toHaveLength(1) })
-    Socket.instances[0]?.push('live-1')
-    expect((await first).value?.rpcId).toBe('live-1')
-
-    const second = stream.next()
-    Socket.instances[0]?.close()
-    await vi.waitFor(() => { expect(Socket.instances).toHaveLength(2) })
-    Socket.instances[1]?.push('live-2')
-    expect((await second).value?.rpcId).toBe('live-2')
-    expect(onOpen).toHaveBeenCalledTimes(2)
-
-    abort.abort()
-  })
-
-  it('times out a WebSocket handshake that never completes and reconnects', async () => {
-    vi.useFakeTimers()
-    // A socket that never fires `open`: without a connect timeout the event
-    // stream would hang forever waiting for onOpen.
-    class StalledSocket {
-      static readonly CONNECTING = 0
-      static readonly OPEN = 1
-      static readonly instances: StalledSocket[] = []
-      readonly url: string
-      readyState = StalledSocket.CONNECTING
-      constructor(url: string | URL) {
-        StalledSocket.instances.push(this)
-        this.url = String(url)
-      }
-      addEventListener(): void {}
-      removeEventListener(): void {}
-      close(): void { this.readyState = 3 }
-    }
-    globalThis.WebSocket = StalledSocket as never
-    const client = new RemoteApiClient('http://127.0.0.1:4180')
-    const abort = new AbortController()
-    const stream = client.events.mux({}, abort.signal)[Symbol.asyncIterator]()
-    void stream.next()
-    await vi.waitFor(() => { expect(StalledSocket.instances).toHaveLength(1) })
-
-    // Advancing past the 10s handshake timeout plus the first ~200ms backoff
-    // must surface a retry (a second socket) instead of hanging forever.
-    await vi.advanceTimersByTimeAsync(10_000 + 200)
-    expect(StalledSocket.instances).toHaveLength(2)
-
-    abort.abort()
-    vi.useRealTimers()
+describe('Web Host origin policy', () => {
+  it('recognizes loopback names and refuses insecure or credentialed origins', () => {
+    expect(loopbackHostname('localhost')).toBe(true)
+    expect(loopbackHostname('tui.localhost')).toBe(true)
+    expect(loopbackHostname('[::1]')).toBe(true)
+    expect(loopbackHostname('127.0.0.1')).toBe(true)
+    expect(loopbackHostname('example.com')).toBe(false)
+    expect(() => webOrigin('http://example.com')).toThrow('非本机 Web Host 必须使用 HTTPS')
+    expect(() => webOrigin('http://127.example.com')).toThrow('非本机 Web Host 必须使用 HTTPS')
+    expect(() => webOrigin('http://user:pass@127.0.0.1:3080')).toThrow('无凭据')
+    expect(() => webOrigin('ftp://127.0.0.1:3080')).toThrow('http(s) origin')
+    expect(webOrigin('https://harness.internal')).toEqual({ origin: 'https://harness.internal' })
+    expect(webOrigin('http://127.0.0.1:4180/?token=abc')).toEqual({ origin: 'http://127.0.0.1:4180', token: 'abc' })
   })
 })
 
-describe('TUI Host selection', () => {
-  const local = apiWithDescribe('ok')
-
-  it('auto-connects to the default Web Host when it is reachable', async () => {
-    const remote = apiWithDescribe('ok')
-    const factory = vi.fn(() => remote)
-    const selected = await selectTuiApi({ continueLatest: false }, local, factory)
-    expect(factory).toHaveBeenCalledWith(DEFAULT_WEB_ORIGIN)
-    expect(selected).toEqual({ api: remote, remote: true })
+describe('TUI Host carrier selection', () => {
+  it('forces the in-tree Host in standalone mode', async () => {
+    const local = localClient()
+    const selected = await selectTuiApi({ continueLatest: false, standalone: true }, local)
+    expect(selected.remote).toBe(false)
+    expect(selected.api).toBe(local)
   })
 
-  it('falls back locally only for implicit discovery', async () => {
-    const factory = vi.fn(() => apiWithDescribe('fail'))
-    expect(await selectTuiApi({ continueLatest: false }, local, factory)).toEqual({ api: local, remote: false })
-    await expect(selectTuiApi({ continueLatest: false, connect: 'http://127.0.0.1:4180' }, local, factory))
-      .rejects.toThrow('无法连接 Web Host')
+  it('falls back to the in-tree Host when default discovery finds no Web Host', async () => {
+    globalThis.fetch = vi.fn(() => Promise.reject(new Error('ECONNREFUSED'))) as unknown as typeof fetch
+    const selected = await selectTuiApi({ continueLatest: false }, localClient())
+    expect(selected.remote).toBe(false)
   })
 
-  it('keeps standalone mode local without probing Web', async () => {
-    const factory = vi.fn(() => apiWithDescribe('ok'))
-    expect(await selectTuiApi({ continueLatest: false, standalone: true }, local, factory))
-      .toEqual({ api: local, remote: false })
-    expect(factory).not.toHaveBeenCalled()
+  it('stops startup when an explicit Web Host target fails', async () => {
+    globalThis.fetch = vi.fn(() => Promise.reject(new Error('ECONNREFUSED'))) as unknown as typeof fetch
+    await expect(selectTuiApi(
+      { continueLatest: false, connect: 'http://127.0.0.1:4180' },
+      localClient(),
+    )).rejects.toThrow('无法连接 Web Host http://127.0.0.1:4180')
+  })
+
+  it('selects the Web Host when it answers the description call', async () => {
+    const calls: string[] = []
+    globalThis.fetch = vi.fn((input: string | URL, init?: RequestInit) => {
+      calls.push(String(input))
+      const body = JSON.parse(String(init?.body)) as { rpcId: string }
+      return Promise.resolve(Response.json({
+        type: 'server-response',
+        rpcId: body.rpcId,
+        result: { ok: true, value: { items: [] } },
+      }))
+    }) as unknown as typeof fetch
+    const selected = await selectTuiApi({ continueLatest: false }, localClient())
+    expect(selected.remote).toBe(true)
+    expect(calls.some(url => url.includes('/api/'))).toBe(true)
   })
 })
+
+
+describe('Web Host carrier wire behavior', () => {
+  it('exchanges the launch token for the cookie and posts the contract envelope', async () => {
+    const requests: { url: string, init: RequestInit }[] = []
+    globalThis.fetch = vi.fn((input: string | URL, init?: RequestInit) => {
+      requests.push({ url: String(input), init: init ?? {} })
+      if (requests.length === 1) {
+        return Promise.resolve(new Response('', {
+          status: 303,
+          headers: { 'set-cookie': 'dsh-auth-127.0.0.1=secret; Path=/; HttpOnly' },
+        }))
+      }
+      const body = JSON.parse(String(init?.body)) as { rpcId: string }
+      return Promise.resolve(Response.json({
+        type: 'server-response',
+        rpcId: body.rpcId,
+        result: { ok: true, value: { items: [] } },
+      }))
+    }) as unknown as typeof fetch
+    const transport = new RemoteTransport('http://127.0.0.1:4180/?token=launch-token')
+    const value = await transport.invoke('session/list', { _request: {} })
+    expect(value).toEqual({ items: [] })
+    expect(requests[0]?.url).toContain('token=launch-token')
+    expect(requests[1]?.url).toBe('http://127.0.0.1:4180/api/session/list')
+    expect((requests[1]?.init.headers as Record<string, string>).cookie).toBe('dsh-auth-127.0.0.1=secret')
+    const envelope = JSON.parse(String(requests[1]?.init.body)) as { method: string, payload: unknown }
+    expect(envelope.method).toBe('session/list')
+    expect(envelope.payload).toEqual({ args: { _request: {} } })
+  })
+
+  it('reports a refused Host with an actionable connect hint', async () => {
+    globalThis.fetch = vi.fn(() => Promise.resolve(new Response('unauthorized', { status: 401 }))) as unknown as typeof fetch
+    const transport = new RemoteTransport('http://127.0.0.1:4180')
+    await expect(transport.invoke('session/list', {})).rejects.toThrow('--connect http://127.0.0.1:4180/?token=')
+  })
+
+  it('surfaces a Remote failure branch with its code and message', async () => {
+    globalThis.fetch = vi.fn((_input: string | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { rpcId: string }
+      return Promise.resolve(Response.json({
+        type: 'server-response',
+        rpcId: body.rpcId,
+        result: { ok: false, error: { code: 'session/not-found', message: 'no such session', details: {} } },
+      }))
+    }) as unknown as typeof fetch
+    const transport = new RemoteTransport('http://127.0.0.1:4180')
+    await expect(transport.invoke('session/list', {})).rejects.toMatchObject({
+      code: 'session/not-found',
+      message: 'no such session',
+    })
+  })
+})
+
+describe('Gateway mux and forwarded events', () => {
+  it('opens logical streams over the WebSocket mux and decodes their values', async () => {
+    globalThis.WebSocket = FakeSocket as unknown as typeof WebSocket
+    const transport = new RemoteTransport('http://127.0.0.1:4180')
+    const controller = new AbortController()
+    const frames: unknown[] = []
+    const reader = (async () => {
+      for await (const value of transport.open('session/control', {}, controller.signal)) frames.push(value)
+    })()
+    await settle()
+    const socket = FakeSocket.instances.at(-1) as FakeSocket
+    const opened = socket.last()
+    expect(opened).toMatchObject({ type: 'open', endpoint: 'session/control', payload: { args: {} } })
+    const streamId = opened['streamId'] as string
+    socket.receive({ type: 'item', streamId, value: { type: 'baseline', value: { projections: {} } } })
+    socket.receive({ type: 'end', streamId })
+    await reader
+    expect(frames).toEqual([{ type: 'baseline', value: { projections: {} } }])
+  })
+
+  it('dispatches emits and answers waterfalls through $events/result', async () => {
+    globalThis.WebSocket = FakeSocket as unknown as typeof WebSocket
+    const posts: { url: string, body: Record<string, unknown> }[] = []
+    globalThis.fetch = vi.fn((input: string | URL, init?: RequestInit) => {
+      posts.push({ url: String(input), body: JSON.parse(String(init?.body)) as Record<string, unknown> })
+      return Promise.resolve(Response.json({ type: 'server-response', rpcId: 'x', result: { ok: true, value: {} } }))
+    }) as unknown as typeof fetch
+    const transport = new RemoteTransport('http://127.0.0.1:4180')
+    const emitted: unknown[][] = []
+    transport.on('api-session/status', (...args) => { emitted.push([...args]) })
+    const answered: string[] = []
+    transport.onWaterfall('approval/request', (invocation) => {
+      answered.push(invocation.sessionId ?? '')
+      void invocation.settle({ kind: 'result', value: 'allowed-once' })
+    })
+    await settle()
+    const socket = FakeSocket.instances.at(-1) as FakeSocket
+    const streamId = socket.last()['streamId'] as string
+    socket.receive({ type: 'item', streamId, value: { type: 'ready', clientId: 'client-1', host: { home: '/home/u' } } })
+    socket.receive({ type: 'item', streamId, value: { type: 'emit', event: 'api-session/status', args: [SID, true] } })
+    socket.receive({
+      type: 'item',
+      streamId,
+      value: { type: 'waterfall', event: 'approval/request', eventId: 'event-9', agentId: SID, request: { toolName: 'bash' } },
+    })
+    await settle()
+    expect(emitted).toEqual([[SID, true]])
+    expect(answered).toEqual([SID])
+    expect(posts.at(-1)?.url).toBe('http://127.0.0.1:4180/api/$events/result')
+    expect(posts.at(-1)?.body).toMatchObject({
+      method: '$events/result',
+      payload: {
+        args: {
+          clientId: 'client-1',
+          eventId: 'event-9',
+          outcome: { kind: 'result', value: 'allowed-once' },
+        },
+      },
+    })
+    expect(transport.facts.home).toBe('/home/u')
+  })
+})
+

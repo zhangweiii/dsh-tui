@@ -6,7 +6,7 @@ import { basename, extname, resolve } from 'node:path'
 import { Readable, type Writable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import type {
-  DownloadsApi, GoalRef, HistoryEntry, IApiClient, ModelProviderGroup, ModelReasoning, PromptContentPart,
+  DownloadsApi, GoalRef, HistoryEntry, ModelProviderGroup, ModelReasoning, PromptContentPart,
   QueuedInboxItem, RpcResponse, SessionSummary, SubagentAddress, WorkspaceId,
 } from './contract/index.ts'
 import type { AttachmentId, ImageMediaType } from '@deepseek-ai/dsh-attachment'
@@ -18,6 +18,7 @@ import type {
 import type { AskUserQuestionAnswer } from '@deepseek-ai/dsh-user-questions/types'
 import type { ApprovalOutcome } from '@deepseek-ai/dsh-user-approval/types'
 import type { SessionId } from '@deepseek-ai/dsh-session'
+import type { TuiHostApi } from './host/api.ts'
 import type { TuiStartupValues } from './startup.ts'
 import { helpLines } from './commands.ts'
 import {
@@ -90,7 +91,7 @@ export interface PermissionSwitchClient {
   set(sessionId: SessionId, preset: string): Promise<string>
 }
 
-/** Host-only capabilities whose transports intentionally sit outside IApiClient. */
+/** Host-only capabilities whose transports sit outside the Remote vocabulary. */
 export interface TuiHostExtensions {
   feedback?: MessageFeedbackClient
   downloads?: DownloadsApi
@@ -278,7 +279,7 @@ export class TuiController {
    * @param extensions - Host-only services whose contracts intentionally have no unary client face.
    */
   constructor(
-    private readonly api: IApiClient,
+    private readonly api: TuiHostApi,
     private readonly extensions: TuiHostExtensions = {},
     private readonly options: TuiControllerOptions = {},
   ) {}

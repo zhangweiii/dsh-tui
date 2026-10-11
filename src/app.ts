@@ -2,7 +2,6 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import type { AgentRegistry } from '@deepseek-ai/dsh-agent'
-import type { ApiProxy } from './contract/index.ts'
 import type { DynamicCordisRunnerService } from '@deepseek-ai/dsh-cordis-host-runner'
 import type { PluginInventoryGateway } from '@deepseek-ai/dsh-host-plugin-inventory'
 import type { MessageFeedbackService } from '@deepseek-ai/dsh-message-feedback'
@@ -17,8 +16,11 @@ import type {} from '@deepseek-ai/dsh-message-feedback'
 import { TuiController } from './controller.ts'
 import { createLocalExtensions } from './extensions.ts'
 import { RemoteFileReferenceClient } from './file-reference.ts'
+import { HostApiClient } from './host/client.ts'
+import { InProcessTransport, resolveGateway } from './host/inprocess.ts'
+import { selectTuiApi } from './host/selection.ts'
+import type { HostTransport } from './host/client.ts'
 import type { Config } from './index.ts'
-import { InProcessApiClient, selectTuiApi, type RemoteRpcCarrier } from './remote.ts'
 import { TerminalApplication } from './terminal.ts'
 
 export interface TerminalIo {
@@ -60,20 +62,20 @@ export function apply(ctx: Context, config: Config): void {
       await ctx.get('loader')?.await()
       if (mountAbort.signal.aborted) return
       // cordis ctx.get is untyped; the casts below are the local type registry.
-      const apiProxy = ctx.get('apiProxy') as ApiProxy | undefined
-      if (apiProxy === undefined) return
       if (!internals.stdin.isTTY || !internals.stdout.isTTY) {
         internals.stderr.write('dsh-tui: 需要交互式终端（TTY）\n')
         appExit(1)
         return
       }
+      const gateway = resolveGateway(ctx)
       const feedback = ctx.get('messageFeedback') as MessageFeedbackService | undefined
       const inventory = ctx.get('pluginInventory') as PluginInventoryGateway | undefined
       const agents = ctx.get('agents') as AgentRegistry | undefined
       if (agents === undefined || inventory === undefined) {
         throw new Error('tui-app: agents and pluginInventory are required')
       }
-      const localApi = new InProcessApiClient(apiProxy)
+      const localTransport: HostTransport = new InProcessTransport(ctx, gateway)
+      const localApi = new HostApiClient(localTransport)
       const selected = await selectTuiApi(config, localApi)
       const controllerConfig: Config = selected.remote && config.cwd === undefined
         ? Object.assign({}, config, { cwd: process.cwd() })
@@ -82,14 +84,14 @@ export function apply(ctx: Context, config: Config): void {
         selected.api,
         selected.remote
           ? {}
-          : createLocalExtensions(ctx, { apiProxy, agents, inventory, runner, feedback }),
+          : createLocalExtensions(ctx, { agents, inventory, runner, feedback }),
         { setTerminalTitle: title => { application?.setTitle(title) } },
       )
       // The Host file-reference index is mounted in the Web bundle only, so
       // standalone mode keeps pi-tui's local completion path untouched.
       const fileReferenceOptions = selected.remote
         ? {
-          fileReferences: new RemoteFileReferenceClient(selected.api as unknown as RemoteRpcCarrier),
+          fileReferences: new RemoteFileReferenceClient(selected.api),
           // Diagnostic-only: the first silent fallback per outage episode.
           onFileReferenceDegraded: (detail: string) => { internals.stderr.write(`dsh-tui: ${detail}\n`) },
         }

@@ -13,7 +13,7 @@ import type { FileReferenceClient } from '../src/file-reference.ts'
 import {
   FileReferenceAutocompleteProvider, RemoteFileReferenceClient,
 } from '../src/file-reference.ts'
-import type { RemoteRpcCarrier } from '../src/remote.ts'
+import type { RemoteRpcCarrier } from '../src/host/api.ts'
 import { slashCommands } from '../src/commands.ts'
 import { TerminalApplication } from '../src/terminal.ts'
 import { SID } from './fake-api.ts'

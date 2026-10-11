@@ -24,7 +24,7 @@ import type {
   AutocompleteItem, AutocompleteProvider, AutocompleteSuggestions,
 } from '@earendil-works/pi-tui'
 import { basename } from 'node:path'
-import type { RemoteRpcCarrier } from './remote.ts'
+import type { RemoteRpcCarrier } from './host/api.ts'
 
 /** Wire namespace of the Host Remote endpoint backing `@` completion. */
 const FILE_REFERENCES_ENDPOINT = 'fileReferences/list'

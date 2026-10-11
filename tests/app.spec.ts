@@ -17,7 +17,7 @@ describe('Cordis TUI mount', () => {
     const resolveRequestRun = vi.fn((_requestId: string, _resolution: unknown) => Promise.resolve({ accepted: true }))
     ctx.provide('appExit', (code: number) => { exits.push(code) })
     ctx.provide('loader', { await: async () => {} } as never)
-    ctx.provide('apiProxy', {} as never)
+    ctx.provide('typertGateway', {} as never)
     ctx.provide('dynamicCordisRunner', { resolveRequestRun } as never)
 
     apply(ctx, { continueLatest: false })

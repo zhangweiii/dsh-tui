@@ -8,10 +8,28 @@
  */
 
 import type { SessionAddress } from '@deepseek-ai/dsh-api-session-controller/types'
-import type { HostFrame, IApiClient, MuxFrame } from '../contract/index.ts'
+import type { HostFrame, IApiClient, MuxFrame, RpcResult } from '../contract/index.ts'
+import type { SessionEvent } from '@deepseek-ai/dsh-session'
+import type { SessionId } from '@deepseek-ai/dsh-session'
 import type { RpcRequest } from '../contract/rpc.ts'
 
 export type { SessionAddress }
+
+/**
+ * One process-local assistant chunk frame. DSH 0.2.x streams assistant output
+ * outside the durable log (the follow stream's `assistant-stream` frames)
+ * precisely because a chunk is not a session event: it has no durable
+ * sequence, so it cannot ride the `session/event` frame without colliding with
+ * the durable sequence space the renderer de-duplicates on.
+ */
+export type SessionChunkFrame = {
+  readonly type: 'session/chunk'
+  readonly sessionId: SessionId
+  readonly event: SessionEvent<'assistant/chunk'>
+}
+
+/** Every frame the live-session subscription delivers. */
+export type TuiMuxFrame = MuxFrame | SessionChunkFrame
 
 /**
  * Payload of the live-session subscription. `address` names the Session (or
@@ -32,7 +50,7 @@ export interface TuiEventsApi extends Omit<IApiClient['events'], 'mux'> {
    * frame. Opening the stream establishes the carrier subscription; `onOpen`
    * fires once the transport is readable, before any frame.
    */
-  mux(payload: MuxPayload, signal: AbortSignal, onOpen?: () => void): AsyncIterable<RpcRequest<MuxFrame>>
+  mux(payload: MuxPayload, signal: AbortSignal, onOpen?: () => void): AsyncIterable<RpcRequest<TuiMuxFrame>>
   /** Host-level frames only. */
   host(payload: {}, signal: AbortSignal, onOpen?: () => void): AsyncIterable<RpcRequest<HostFrame>>
 }
@@ -40,4 +58,18 @@ export interface TuiEventsApi extends Omit<IApiClient['events'], 'mux'> {
 /** Complete Host API consumed by the controller and the model. */
 export interface TuiHostApi extends Omit<IApiClient, 'events'> {
   events: TuiEventsApi
+}
+
+/**
+ * Generic unary Remote face for endpoints outside the frozen vocabulary (the
+ * Host's own typert Remotes such as the file-reference index). Kept structural
+ * so focused tests can drive a consumer without a live carrier.
+ */
+export interface RemoteRpcCarrier {
+  /**
+   * Call one channel-relative endpoint (`<namespace>/<method>`) with its named
+   * wire arguments. Resolves with the result envelope; a result error branch is
+   * returned rather than thrown.
+   */
+  callRemote(endpoint: string, args: Readonly<Record<string, unknown>>, signal?: AbortSignal): Promise<RpcResult<unknown>>
 }

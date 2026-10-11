@@ -3,6 +3,7 @@
 import type {
   HistoryEntry, HostFrame, JobView, MuxFrame, QueuedInboxItem, RpcId, SessionSummary, ToolEventView,
 } from './contract/index.ts'
+import type { SessionChunkFrame, TuiMuxFrame } from './host/api.ts'
 import type { MessageId } from '@deepseek-ai/dsh-llm/brand'
 import type { AskUserQuestionItem } from '@deepseek-ai/dsh-user-questions/types'
 import type { ApprovalRequestId } from '@deepseek-ai/dsh-user-approval/types'
@@ -994,11 +995,12 @@ export function applyHistory(state: TuiViewState, entries: readonly HistoryEntry
  * @param frame - Session or interaction frame to fold.
  * @returns Updated terminal projection.
  */
-export function applyMuxFrame(state: TuiViewState, rpcId: RpcId, frame: MuxFrame): TuiViewState {
+export function applyMuxFrame(state: TuiViewState, rpcId: RpcId, frame: TuiMuxFrame): TuiViewState {
   if (frame.type === 'stream/error') return { ...state, notice: frame.error.message }
   if (state.sessionId === undefined || frame.sessionId !== state.sessionId) return state
   switch (frame.type) {
     case 'session/event': return applySessionEvent(state, frame.event, frame.view)
+    case 'session/chunk': return applySessionEvent(state, frame.event)
     case 'session/queue': {
       const queueItems = frame.items.filter(item => item.placement !== 'context')
       return { ...state, queueSize: queueItems.length, queueItems }

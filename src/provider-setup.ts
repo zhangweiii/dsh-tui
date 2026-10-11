@@ -5,9 +5,10 @@
  * `providerSetupRows`; everything else is pure draft logic the tests drive
  * without a terminal.
  */
+import type { TuiHostApi } from './host/api.ts'
 import { getPath, nodeAtPath, rehydrateSchema } from './schema-form.ts'
 import type {
-  ConfigurableProviderView, CredentialView, IApiClient,
+  ConfigurableProviderView, CredentialView,
   SettingsNamespaceView, SettingsPathOpView,
 } from './contract/index.ts'
 import { normalizeApiKey } from '@deepseek-ai/dsh-llm'
@@ -122,7 +123,7 @@ export function providerProtocolChoices(namespace: SettingsNamespaceView | undef
 
 /** Join the three Host fact sources used by provider configuration. */
 export async function loadProviderSetupCatalog(
-  api: Pick<IApiClient, 'llm' | 'settings' | 'credentials'>,
+  api: Pick<TuiHostApi, 'llm' | 'settings' | 'credentials'>,
 ): Promise<ProviderSetupCatalog> {
   const [providerResponse, settingsResponse] = await Promise.all([
     api.llm.providers({}), api.settings.describe({}),
@@ -297,7 +298,7 @@ export function toggleProviderCandidate(draft: ProviderSetupDraft, modelId: stri
 }
 
 export async function discoverProviderSetupModels(
-  api: Pick<IApiClient, 'llm'>, draft: ProviderSetupDraft,
+  api: Pick<TuiHostApi, 'llm'>, draft: ProviderSetupDraft,
 ): Promise<ProviderSetupDraft> {
   const keyError = providerApiKeyError(draft.apiKey)
   if (keyError !== undefined) return { ...draft, busy: false, error: keyError }
@@ -352,7 +353,7 @@ export interface ProviderSetupCommit {
 
 /** Persist through DSH settings/credentials seams, preserving partial-commit retry state. */
 export async function commitProviderSetup(
-  api: Pick<IApiClient, 'settings' | 'credentials'>, draft: ProviderSetupDraft,
+  api: Pick<TuiHostApi, 'settings' | 'credentials'>, draft: ProviderSetupDraft,
 ): Promise<ProviderSetupCommit> {
   const failure = providerSetupValidation(draft)
   if (failure !== undefined) return { draft: { ...draft, busy: false, error: failure }, done: false }

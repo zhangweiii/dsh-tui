@@ -16,7 +16,6 @@ import type { TuiHostExtensions } from './controller.ts'
 
 /** Services resolved from the settled standalone Host context. */
 export interface LocalExtensionDeps {
-  apiProxy: ApiProxy
   agents: AgentRegistry
   inventory: PluginInventoryGateway
   runner: DynamicCordisRunnerService
@@ -40,7 +39,7 @@ function asJobId(value: string): JobId {
  * @param deps - Services already required by the TUI mount.
  */
 export function createLocalExtensions(ctx: Context, deps: LocalExtensionDeps): TuiHostExtensions {
-  const { apiProxy, agents, inventory, runner, feedback } = deps
+  const { agents, inventory, runner, feedback } = deps
   const cordisRows = (): DynamicCordisInventoryRow[] => runner.inventory()
   const ownedCordis = (sessionId: string, pluginId: string): DynamicCordisInventoryRow => {
     const row = cordisRows().find(item => item.pluginId === pluginId && item.agentId === sessionId)
@@ -48,7 +47,6 @@ export function createLocalExtensions(ctx: Context, deps: LocalExtensionDeps): T
     return row
   }
   return {
-    downloads: apiProxy.downloads,
     ...(feedback === undefined ? {} : { feedback }),
     plugins: { list: async () => (await inventory.list()).entries },
     permission: {
