@@ -13,7 +13,7 @@ export const name = 'tui-app'
 
 /** Local Host fallback and command-line values required by the terminal application. */
 export const inject = [
-  'apiProxy', 'tuiStartup', 'messageFeedback', 'dynamicCordisRunner', 'agents', 'pluginInventory',
+  'typertGateway', 'tuiStartup', 'messageFeedback', 'dynamicCordisRunner', 'agents', 'pluginInventory',
 ]
 
 /** Invocation values passed from the startup provider through the bundle patch. */

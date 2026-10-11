@@ -19,6 +19,14 @@
   config:
     mode: !!js process.env.DSH_TOOLS_MODE
 
+# Deployment persona, matching the Web surface: each session's preset may still
+# override it through that agent's own scope.
+- id: system-prompt
+  config:
+    personaSuffix: Your working directory is {{cwd}}.
+    personaPrefix: >-
+      You are a coding agent powered by the {{model}} model.
+
 - insert:
     # ── Host controllers behind the Remote surface the terminal consumes ────────
     - id: session-controller
@@ -45,6 +53,21 @@
     # `@` completion index behind the session controller's fileReferences Remote.
     - id: file-reference-local
       name: '@deepseek-ai/dsh-file-reference-local'
+
+    # Carrier-neutral Connection registries plus the upload service the session
+    # controller's prompt endpoint resolves file receipts through. Neither opens
+    # a port: without a `webServer` row, Connection mounts only its in-process
+    # RPC registries.
+    - id: connection
+      name: '@deepseek-ai/dsh-client-connection'
+
+    - id: file-upload
+      name: '@deepseek-ai/dsh-client-file-upload'
+
+    # Host-owned opt-in the subagent tools resolve when a session receives its
+    # preset delegation tools.
+    - id: subagent-model-selection-settings
+      name: '@deepseek-ai/dsh-tool-subagent/model-selection-settings'
 
     # Whole-log turn/step counts for the footer's sessionStats projection.
     - id: session-stats
@@ -78,55 +101,7 @@
         connect: !!js ctx.tuiStartup.connect
         standalone: !!js ctx.tuiStartup.standalone
 
-# Each persisted session owns its preset composition, matching the Web
-# surface. Host registries remain process-wide; only model-facing rows move.
-- id: tool-bash
-  disabled: true
-- id: tool-pwsh
-  disabled: true
-- id: tool-jobs
-  disabled: true
-- id: tool-fs
-  disabled: true
-- id: tool-fs-search
-  disabled: true
-- id: skill-filesystem
-  disabled: true
-- id: tool-skill
-  disabled: true
-- id: tool-goal
-  disabled: true
-- id: plan-mode
-  disabled: true
-- id: compaction-basic
-  disabled: true
-- id: command-compact
-  disabled: true
-- id: tool-result-pruner
-  disabled: true
-- id: tool-subagent-control
-  disabled: true
-- id: tool-subagent-list-agents
-  disabled: true
-- id: tool-subagent
-  disabled: true
-- id: tool-subagent-fork
-  disabled: true
-- id: workflow-ptc
-  disabled: true
-- id: tool-workflow
-  disabled: true
-- id: tool-ralph
-  disabled: true
-- id: agent-instructions
-  disabled: true
-- id: tool-todo
-  disabled: true
-- id: tool-web
-  disabled: true
-
-- insert:
-    - id: agent-preset-registry
-      name: '@deepseek-ai/dsh-agent-preset-registry'
-      config:
-        default: standard
+# A terminal is one session composed process-wide, so the base agent plane stays
+# as `dsh-base` mounted it: the model-facing rows keep their deployment owner and
+# no preset realm is composed (a preset declares scope-only rows such as the
+# persona, which a terminal profile has no agent scope to mount them in).

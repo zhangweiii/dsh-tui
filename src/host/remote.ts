@@ -12,6 +12,7 @@
  */
 
 import { randomUUID } from 'node:crypto'
+import WebSocketClient from 'ws'
 import { RpcId } from '../contract/runtime.ts'
 import { FrameQueue, type HostTransport, type WaterfallInvocation } from './client.ts'
 
@@ -98,34 +99,42 @@ interface LogicalStream {
  * uninterrupted stream across reconnections.
  */
 class MuxSocket {
-  private socket: WebSocket | undefined
+  private socket: WebSocketClient | undefined
   private connecting: Promise<void> | undefined
   private readonly streams = new Map<string, LogicalStream>()
   private closed = false
   private attempt = 0
 
-  constructor(private readonly url: string, private readonly cookie: string | undefined) {}
+  constructor(private readonly url: string, private cookie: string | undefined) {}
 
+  /**
+   * Open one Gateway mux connection. The Host authenticates the `/api` upgrade
+   * with the same browser cookie the unary channel uses, so the carrier sends it
+   * as a handshake header — which the platform WebSocket API cannot.
+   * @returns a settled promise once the socket is open.
+   */
   private async connect(): Promise<void> {
     if (this.closed) throw new Error('Web Host 连接已关闭')
-    if (this.socket?.readyState === WebSocket.OPEN) return
+    if (this.socket?.readyState === WebSocketClient.OPEN) return
     if (this.connecting !== undefined) return await this.connecting
     this.connecting = new Promise<void>((resolve, reject) => {
-      const socket = new WebSocket(this.url)
+      const socket = this.cookie === undefined || this.cookie === ''
+        ? new WebSocketClient(this.url)
+        : new WebSocketClient(this.url, { headers: { cookie: this.cookie } })
       const timer = setTimeout(() => { socket.close() }, DEFAULT_TIMEOUT_MS)
-      socket.addEventListener('open', () => {
+      socket.on('open', () => {
         clearTimeout(timer)
         this.socket = socket
         this.attempt = 0
         resolve()
         for (const [streamId, stream] of this.streams) this.openOn(socket, streamId, stream)
-      }, { once: true })
-      socket.addEventListener('error', () => {
+      })
+      socket.on('error', () => {
         clearTimeout(timer)
         reject(new Error(`无法连接 Web Host：${this.url}`))
-      }, { once: true })
-      socket.addEventListener('message', (event) => { this.handleMessage(event.data) })
-      socket.addEventListener('close', () => {
+      })
+      socket.on('message', (data: unknown) => { this.handleMessage(data) })
+      socket.on('close', () => {
         clearTimeout(timer)
         if (this.socket === socket) this.socket = undefined
         if (!this.closed) this.scheduleReconnect()
@@ -143,7 +152,7 @@ class MuxSocket {
     }, delay)
   }
 
-  private openOn(socket: WebSocket, streamId: string, stream: LogicalStream): void {
+  private openOn(socket: WebSocketClient, streamId: string, stream: LogicalStream): void {
     socket.send(JSON.stringify({
       type: 'open',
       streamId,
@@ -154,7 +163,7 @@ class MuxSocket {
 
   private send(message: unknown): void {
     const socket = this.socket
-    if (socket?.readyState !== WebSocket.OPEN) return
+    if (socket?.readyState !== WebSocketClient.OPEN) return
     socket.send(JSON.stringify(message))
   }
 
@@ -247,7 +256,8 @@ type ForwardedFrame = {
 export class RemoteTransport implements HostTransport {
   readonly facts: { home: string | undefined, isLoopback: boolean }
   private readonly origin: string
-  private readonly mux: MuxSocket
+  private readonly muxUrl: string
+  private mux: MuxSocket | undefined
   private token: string | undefined
   private cookie: string | undefined
   private authenticated: Promise<void> | undefined
@@ -262,8 +272,19 @@ export class RemoteTransport implements HostTransport {
     const parsed = webOrigin(origin)
     this.origin = parsed.origin
     this.facts = { home: undefined, isLoopback: loopbackHostname(new URL(parsed.origin).hostname) }
-    this.mux = new MuxSocket(new URL(REMOTE_STREAM_MUX_PATH, parsed.origin).href.replace(/^http/u, 'ws'), undefined)
+    this.muxUrl = new URL(REMOTE_STREAM_MUX_PATH, parsed.origin).href.replace(/^http/u, 'ws')
     this.token = parsed.token
+  }
+
+  /**
+   * The mux socket, created on first use so it carries the cookie the unary
+   * channel negotiated (a Host that fences `/api` fences the upgrade with the
+   * same credential).
+   * @returns the shared mux socket.
+   */
+  private socket(): MuxSocket {
+    this.mux ??= new MuxSocket(this.muxUrl, this.cookie)
+    return this.mux
   }
 
   /**
@@ -320,7 +341,12 @@ export class RemoteTransport implements HostTransport {
   }
 
   open(endpoint: string, args: Record<string, unknown>, signal: AbortSignal): AsyncIterable<unknown> {
-    return this.mux.open(endpoint, args, signal)
+    return {
+      [Symbol.asyncIterator]: () => (async function* (this: RemoteTransport) {
+        await this.authenticate()
+        yield* this.socket().open(endpoint, args, signal)
+      }).call(this),
+    }
   }
 
   on(event: string, listener: (...args: readonly unknown[]) => void): () => void {
@@ -340,11 +366,11 @@ export class RemoteTransport implements HostTransport {
     if (this.eventsStarted) return
     this.eventsStarted = true
     const controller = new AbortController()
-    void (async () => {
-      for await (const value of this.mux.open(EVENT_STREAM_ENDPOINT, {}, controller.signal)) {
+    void this.authenticate().then(async () => {
+      for await (const value of this.socket().open(EVENT_STREAM_ENDPOINT, {}, controller.signal)) {
         this.handleForwarded(value as ForwardedFrame)
       }
-    })().catch(() => { /* the mux reports stream failures to its own consumers */ })
+    }).catch(() => { /* the mux reports stream failures to its own consumers */ })
   }
 
   /** Dispatch one forwarded-event frame to its local listener. */
@@ -393,7 +419,7 @@ export class RemoteTransport implements HostTransport {
   }
 
   async close(): Promise<void> {
-    this.mux.close()
+    this.mux?.close()
     this.emitListeners.clear()
     this.waterfallListeners.clear()
   }

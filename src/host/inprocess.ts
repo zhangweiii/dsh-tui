@@ -56,21 +56,42 @@ export class InProcessTransport implements HostTransport {
     this.facts = { home: resolveDshHome(), isLoopback: true }
   }
 
+  /**
+   * The Peer this terminal speaks for. A browser request is admitted as the
+   * Host's operator, and the Remote services key per-peer state (session and
+   * agent scopes) by it; the in-process carrier must present the same Peer or
+   * the Host would compose a session outside the scope the operator owns.
+   * @returns the operator Peer, or undefined when Connection is not composed.
+   */
+  private peer(): unknown {
+    const connection = this.ctx.get('connection') as { operator?: unknown } | undefined
+    return connection?.operator
+  }
+
   async invoke(endpoint: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
     const { namespace, method } = endpointParts(endpoint)
+    const peer = this.peer()
     return await this.gateway.invoke({
       namespace,
       method,
       args,
+      ...(peer === undefined ? {} : { peer: peer as never }),
       ...(signal === undefined ? {} : { signal }),
     })
   }
 
   open(endpoint: string, args: Record<string, unknown>, signal: AbortSignal): AsyncIterable<unknown> {
     const { namespace, method } = endpointParts(endpoint)
+    const peer = this.peer()
     return {
       [Symbol.asyncIterator]: () => (async function* (this: InProcessTransport) {
-        const stream = await this.gateway.stream({ namespace, method, args, signal })
+        const stream = await this.gateway.stream({
+          namespace,
+          method,
+          args,
+          ...(peer === undefined ? {} : { peer: peer as never }),
+          signal,
+        })
         yield* stream
       }).call(this),
     }

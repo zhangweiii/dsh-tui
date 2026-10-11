@@ -1,68 +1,26 @@
 /** Web Host carrier: origin policy, selection, unary envelopes, and live frames. */
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import type { FakeSocket as FakeSocketType } from './fake-ws.ts'
 import { HostApiClient, type HostTransport } from '../src/host/client.ts'
 import { RemoteTransport, loopbackHostname, webOrigin } from '../src/host/remote.ts'
 import { selectTuiApi } from '../src/host/selection.ts'
 import { SID } from './fake-api.ts'
 
+vi.mock('ws', async () => {
+  const { FakeSocket } = await import('./fake-ws.ts')
+  return { default: FakeSocket }
+})
+
+const { FakeSocket } = await import('./fake-ws.ts')
+
 const originalFetch = globalThis.fetch
-const originalWebSocket = globalThis.WebSocket
 
 afterEach(() => {
   globalThis.fetch = originalFetch
-  globalThis.WebSocket = originalWebSocket
+  FakeSocket.instances.length = 0
   vi.restoreAllMocks()
 })
-
-/** Minimal stand-in for the Gateway WebSocket mux. */
-class FakeSocket {
-  static readonly instances: FakeSocket[] = []
-  static readonly CONNECTING = 0
-  static readonly OPEN = 1
-  static readonly CLOSING = 2
-  static readonly CLOSED = 3
-  readyState = 0
-  readonly sent: string[] = []
-  private readonly listeners = new Map<string, ((event: { data?: unknown }) => void)[]>()
-
-  constructor(readonly url: string) {
-    FakeSocket.instances.push(this)
-    setTimeout(() => {
-      this.readyState = 1
-      this.dispatch('open')
-    }, 0)
-  }
-
-  addEventListener(type: string, listener: (event: never) => void): void {
-    const listeners = this.listeners.get(type) ?? []
-    listeners.push(listener as (event: { data?: unknown }) => void)
-    this.listeners.set(type, listeners)
-  }
-
-  send(message: string): void {
-    this.sent.push(message)
-  }
-
-  close(): void {
-    this.readyState = 3
-    this.dispatch('close')
-  }
-
-  /** Deliver one host→client frame. */
-  receive(frame: unknown): void {
-    this.dispatch('message', { data: JSON.stringify(frame) })
-  }
-
-  /** Last client→host message, parsed. */
-  last(): Record<string, unknown> {
-    return JSON.parse(this.sent.at(-1) ?? '{}') as Record<string, unknown>
-  }
-
-  private dispatch(type: string, event: unknown = {}): void {
-    for (const listener of this.listeners.get(type) ?? []) listener(event as { data?: unknown })
-  }
-}
 
 async function settle(): Promise<void> {
   await new Promise(resolve => setTimeout(resolve, 0))
@@ -192,8 +150,25 @@ describe('Web Host carrier wire behavior', () => {
 })
 
 describe('Gateway mux and forwarded events', () => {
+  it('carries the negotiated browser cookie on the mux handshake', async () => {
+    globalThis.fetch = vi.fn(() => Promise.resolve(new Response('', {
+      status: 303,
+      headers: { 'set-cookie': 'dsh-auth-127.0.0.1:4180=cookie-value; Path=/; HttpOnly' },
+    }))) as unknown as typeof fetch
+    const transport = new RemoteTransport('http://127.0.0.1:4180/?token=launch')
+    const controller = new AbortController()
+    const reader = (async () => {
+      for await (const _frame of transport.open('session/control', {}, controller.signal)) { /* drain */ }
+    })()
+    await settle()
+    const socket = FakeSocket.instances.at(-1) as FakeSocketType
+    expect(socket.url).toBe('ws://127.0.0.1:4180/api/remote.mux')
+    expect(socket.options?.headers?.cookie).toBe('dsh-auth-127.0.0.1:4180=cookie-value')
+    controller.abort()
+    await reader
+  })
+
   it('opens logical streams over the WebSocket mux and decodes their values', async () => {
-    globalThis.WebSocket = FakeSocket as unknown as typeof WebSocket
     const transport = new RemoteTransport('http://127.0.0.1:4180')
     const controller = new AbortController()
     const frames: unknown[] = []
@@ -201,7 +176,7 @@ describe('Gateway mux and forwarded events', () => {
       for await (const value of transport.open('session/control', {}, controller.signal)) frames.push(value)
     })()
     await settle()
-    const socket = FakeSocket.instances.at(-1) as FakeSocket
+    const socket = FakeSocket.instances.at(-1) as FakeSocketType
     const opened = socket.last()
     expect(opened).toMatchObject({ type: 'open', endpoint: 'session/control', payload: { args: {} } })
     const streamId = opened['streamId'] as string
@@ -212,7 +187,6 @@ describe('Gateway mux and forwarded events', () => {
   })
 
   it('dispatches emits and answers waterfalls through $events/result', async () => {
-    globalThis.WebSocket = FakeSocket as unknown as typeof WebSocket
     const posts: { url: string, body: Record<string, unknown> }[] = []
     globalThis.fetch = vi.fn((input: string | URL, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body)) as Record<string, unknown>
@@ -228,7 +202,7 @@ describe('Gateway mux and forwarded events', () => {
       void invocation.settle({ kind: 'result', value: 'allowed-once' })
     })
     await settle()
-    const socket = FakeSocket.instances.at(-1) as FakeSocket
+    const socket = FakeSocket.instances.at(-1) as FakeSocketType
     const streamId = socket.last()['streamId'] as string
     socket.receive({ type: 'item', streamId, value: { type: 'ready', clientId: 'client-1', host: { home: '/home/u' } } })
     socket.receive({ type: 'item', streamId, value: { type: 'emit', event: 'api-session/status', args: [SID, true] } })
