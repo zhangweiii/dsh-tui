@@ -105,6 +105,29 @@ The terminal does not rewrite the request prefix. Ordinary prompts and Host-auth
 - **One selected session per terminal** — other sessions continue on the Host, but this process renders one transcript at a time and keeps only the current answerable interaction in its panel.
 - **`ctx.appExit` is launcher-owned** — mounting the bundle outside `dsh` requires the host to provide the bounded exit request.
 
+## Verifying against a real Host
+
+`npm run check` covers the unit and protocol layers; the composition itself is verified against an installed `dsh` release. A terminal profile is an ordinary package-manager project, so the recipe is a manifest plus the two bundles:
+
+```sh
+export DSH_HOME=$(mktemp -d)/home
+mkdir -p "$DSH_HOME/profiles/tui" && cd "$DSH_HOME/profiles/tui"
+cat > package.json <<'JSON'
+{
+  "name": "dsh-profile-tui",
+  "private": true,
+  "dependencies": {},
+  "dsh": { "profile": { "bundles": ["@deepseek-ai/dsh-base", "@zhangweiii/dsh-tui"] } }
+}
+JSON
+printf '[]\n' > cordis.patch.yml
+npm install --ignore-scripts @deepseek-ai/dsh@0.2.0-rc.2 /path/to/this/checkout
+node node_modules/@deepseek-ai/dsh/lib/bin.js --profile tui --dump-config | tail -5
+script -qec "stty cols 200; node node_modules/@deepseek-ai/dsh/lib/bin.js --profile tui --standalone" /dev/null
+```
+
+The first command prints the composed tree, where every row must resolve; the second boots the terminal, and `script -qec` supplies the pty a non-interactive shell lacks. A Web Host started elsewhere exercises the remote carrier: `dsh web --port 3080 --no-open` prints `http://127.0.0.1:3080/?token=…`, and `--connect 'http://127.0.0.1:3080/?token=…'` lists and creates sessions on that Host — the same `session/list` the browser reads. [`tests/host-protocol.md`](tests/host-protocol.md) records the captured 0.2.0 wire protocol this carrier implements.
+
 ## Releasing
 
 Publishes run through the [Release workflow](.github/workflows/release.yml): pushing a version tag runs the test matrix, publishes to npm with provenance, then creates the matching GitHub Release. The workflow is idempotent: it skips an npm version that already exists and does not recreate an existing GitHub Release. The dist-tag follows the version — prerelease versions publish under `beta`, stable versions under `latest`:

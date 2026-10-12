@@ -105,6 +105,29 @@ TUI 自己持有的命令会打开终端原生面板。其他 slash command 仍�
 - **每个终端只选择一个 session**：其他 session 仍可在 Host 上继续运行，但当前进程一次只渲染一个 transcript，并且面板只保留当前可回答 interaction。
 - **`ctx.appExit` 由启动器持有**：在 `dsh` 外部挂载本组合包时，宿主必须提供有界退出请求。
 
+## 对真实 Host 的验证
+
+`npm run check` 覆盖单元与协议层；组合本身需要对着已安装的 `dsh` 版本验证。终端 profile 就是一个普通的包管理项目，配方只有一份 manifest 加两个 bundle：
+
+```sh
+export DSH_HOME=$(mktemp -d)/home
+mkdir -p "$DSH_HOME/profiles/tui" && cd "$DSH_HOME/profiles/tui"
+cat > package.json <<'JSON'
+{
+  "name": "dsh-profile-tui",
+  "private": true,
+  "dependencies": {},
+  "dsh": { "profile": { "bundles": ["@deepseek-ai/dsh-base", "@zhangweiii/dsh-tui"] } }
+}
+JSON
+printf '[]\n' > cordis.patch.yml
+npm install --ignore-scripts @deepseek-ai/dsh@0.2.0-rc.2 /path/to/this/checkout
+node node_modules/@deepseek-ai/dsh/lib/bin.js --profile tui --dump-config | tail -5
+script -qec "stty cols 200; node node_modules/@deepseek-ai/dsh/lib/bin.js --profile tui --standalone" /dev/null
+```
+
+第一条命令打印组合后的 row 列表，要求每一行都能解析；第二条启动终端，`script -qec` 为非交互 shell 提供所需 pty。另开一个终端启动 Web Host 可验证远程 carrier：`dsh web --port 3080 --no-open` 会打印 `http://127.0.0.1:3080/?token=…`，随后用 `--connect 'http://127.0.0.1:3080/?token=…'` 即可列出并创建该 Host 上的 session——与浏览器读到的是同一份 `session/list`。[`tests/host-protocol.md`](tests/host-protocol.md) 记录了本 carrier 实现的 0.2.0 线路实测协议。
+
 ## 发布流程
 
 发布由 [Release workflow](.github/workflows/release.yml) 执行：推送版本 tag 会先跑测试矩阵、带 provenance 发布到 npm，再创建对应的 GitHub Release。流程可安全重跑：npm 中已存在的版本会跳过，已有的 GitHub Release 也不会重复创建。dist-tag 由版本号决定——预发布版本进入 `beta`，稳定版本进入 `latest`：
